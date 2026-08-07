@@ -333,6 +333,92 @@ button {
   text-transform: uppercase;
 }
 
+.visit-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.voice-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 132px;
+  padding: 10px 15px;
+  border: 1px solid rgba(166, 236, 216, 0.23);
+  border-radius: 999px;
+  color: rgba(226, 247, 241, 0.65);
+  background: rgba(76, 164, 143, 0.07);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  transition: color 240ms ease, border-color 240ms ease, background 240ms ease;
+}
+
+.voice-button:hover {
+  color: rgba(235, 255, 248, 0.9);
+  border-color: rgba(172, 244, 224, 0.45);
+  background: rgba(87, 186, 160, 0.12);
+}
+
+.voice-button:focus-visible {
+  outline: 2px solid rgba(169, 247, 225, 0.78);
+  outline-offset: 4px;
+}
+
+.voice-orb {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(190, 247, 231, 0.66);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(136, 239, 209, 0);
+}
+
+.voice-button.is-listening {
+  color: rgba(237, 255, 250, 0.94);
+  border-color: rgba(170, 245, 223, 0.56);
+  background: rgba(91, 205, 173, 0.14);
+}
+
+.voice-button.is-listening .voice-orb {
+  background: #b9f5d9;
+  box-shadow: 0 0 12px rgba(145, 243, 214, 0.74);
+  animation: listening 1.45s ease-out infinite;
+}
+
+.voice-language {
+  padding: 6px 2px;
+  border: 0;
+  color: rgba(211, 239, 232, 0.38);
+  background: transparent;
+  cursor: pointer;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.voice-language:hover:not(:disabled) {
+  color: rgba(226, 249, 242, 0.7);
+}
+
+.voice-language:focus-visible {
+  outline: 1px solid rgba(169, 247, 225, 0.72);
+  outline-offset: 3px;
+}
+
+.voice-language:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
 .memory {
   right: clamp(24px, 5vw, 72px);
   bottom: clamp(26px, 4vw, 50px);
@@ -386,6 +472,11 @@ button {
   to { opacity: 1; transform: translate(-50%, 0); filter: blur(0); }
 }
 
+@keyframes listening {
+  0% { box-shadow: 0 0 0 0 rgba(145, 243, 214, 0.55); }
+  70%, 100% { box-shadow: 0 0 0 9px rgba(145, 243, 214, 0); }
+}
+
 @media (max-width: 620px) {
   .memory,
   .privacy {
@@ -400,6 +491,10 @@ button {
     top: 72px;
     right: 18px;
     width: 142px;
+  }
+
+  .visit-controls {
+    gap: 14px;
   }
 }
 
@@ -418,4 +513,6 @@ button {
   }
 
   .lumen-speech.is-visible { opacity: 1; transform: translate(-50%, 0); }
+
+  .voice-button.is-listening .voice-orb { animation: none; }
 }

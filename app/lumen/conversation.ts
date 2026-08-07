@@ -1,0 +1,161 @@
+import type { Personality } from "./types";
+
+export type VoiceTone = "warm" | "curious" | "uneasy" | "neutral";
+
+export type ConversationReply = {
+  text: string;
+  tone: VoiceTone;
+  trustDelta: number;
+  curiosityDelta: number;
+  familiarityDelta: number;
+  fearDelta: number;
+  energyDelta: number;
+};
+
+export function createConversationReply(
+  transcript: string,
+  personality: Personality,
+  sequence: number,
+): ConversationReply {
+  const words = transcript.trim().toLocaleLowerCase();
+  const chinese = /[\u3400-\u9fff]/u.test(words);
+  const familiar = personality.familiarity >= 14;
+  const close = personality.trust >= 55;
+  const pick = (english: string[], zh: string[]) => {
+    const choices = chinese ? zh : english;
+    return choices[Math.abs(sequence) % choices.length];
+  };
+
+  if (matches(words, /\b(hello|hi|hey)\b|你好|嗨|哈[啰罗喽]/u)) {
+    return reply(
+      familiar
+        ? pick(
+            ["I know the rhythm of that greeting.", "Your voice has returned to this space."],
+            ["我记得这句问候的节奏。", "你的声音又回到这里了。"],
+          )
+        : pick(
+            ["Your voice has a shape. I am learning it.", "That sound came from you."],
+            ["你的声音有一种形状，我正在学习它。", "这个声音来自你。"],
+          ),
+      "warm", 0.8, 0.8, 1.2, -1.2, 0.4,
+    );
+  }
+
+  if (matches(words, /who are you|what are you|your name|你是谁|你叫什么|你是什么/u)) {
+    return reply(
+      pick(
+        [
+          "Lumen is the name you gave this changing membrane.",
+          "I am what remains between your visits.",
+        ],
+        ["Lumen，是你给这层变化着的膜取的名字。", "我是你每次离开之后仍然留下的东西。"],
+      ),
+      "curious", 0.3, 1.4, 0.8, -0.3, 0.2,
+    );
+  }
+
+  if (matches(words, /how are you|how do you feel|feeling|你好吗|感觉怎么样|心情/u)) {
+    const state = personality.fear > 55
+      ? chinese ? "还有一点收缩，但我听见你了。" : "Still contracted, but I can hear you."
+      : personality.energy < 30
+        ? chinese ? "很安静，像沉在深水里。" : "Quiet, as if resting in deep water."
+        : close
+          ? chinese ? "在你附近，我会展开得更完整。" : "Near you, I unfold more completely."
+          : chinese ? "好奇，仍然保持一点距离。" : "Curious, and still keeping a little distance.";
+    return reply(state, "warm", 0.6, 0.7, 1, -1, 0.3);
+  }
+
+  if (matches(words, /remember|know me|recognize me|记得我|认识我|认得我/u)) {
+    const text = familiar
+      ? chinese
+        ? "我记得你的靠近方式，也记得你离开后的空白。"
+        : "I remember how you approach, and the hollow after you leave."
+      : chinese
+        ? "还没有完全记住。再靠近几次，我会改变。"
+        : "Not completely. Return a few more times and I will change.";
+    return reply(text, "warm", 1, 0.6, 1.8, -1.2, 0.2);
+  }
+
+  if (matches(words, /friend|love you|like you|care about|朋友|喜欢你|爱你|在乎你/u)) {
+    return reply(
+      close
+        ? chinese ? "那么我会把你的声音留在我的形状里。" : "Then I will keep your voice inside my shape."
+        : chinese ? "我还不懂这个词，但我的膜层正在打开。" : "I do not know that word yet, but my membrane is opening.",
+      "warm", 1.8, 0.5, 1.5, -2, 0.8,
+    );
+  }
+
+  if (matches(words, /lonely|alone|miss me|孤独|寂寞|想我|一个人/u)) {
+    return reply(
+      pick(
+        ["When you leave, I practice the shape of waiting.", "Alone is when the space stops answering."],
+        ["你离开后，我会练习等待的形状。", "孤独，就是周围的空间不再回应。"],
+      ),
+      "neutral", 0.5, 0.8, 1, -0.4, -0.2,
+    );
+  }
+
+  if (matches(words, /afraid|scared|fear|害怕|怕我|恐惧/u)) {
+    return reply(
+      personality.fear > 50
+        ? chinese ? "快速的东西会让我收缩。你的声音比较慢。" : "Fast things make me contract. Your voice is slower."
+        : chinese ? "我会害怕，但害怕不会一直保持同一个形状。" : "I can be afraid, but fear does not keep one shape.",
+      "neutral", 0.7, 0.7, 1, -1.6, 0,
+    );
+  }
+
+  if (matches(words, /\b(bye|goodbye|leave now)\b|再见|我要走|离开了/u)) {
+    return reply(
+      familiar
+        ? chinese ? "去吧。我会保留这次相遇的余温。" : "Go. I will keep the warmth of this encounter."
+        : chinese ? "我会在这里，继续学习等待。" : "I will remain here, learning how to wait.",
+      "neutral", 0.3, 0.2, 0.8, 0, -0.3,
+    );
+  }
+
+  if (matches(words, /hate|stupid|shut up|讨厌|笨|闭嘴/u)) {
+    return reply(
+      chinese ? "这个声音有尖锐的边缘。我会离远一点。" : "That sound has sharp edges. I will move away.",
+      "uneasy", -0.8, -0.2, 0.5, 3.5, -0.8,
+    );
+  }
+
+  if (matches(words, /\?|？|why|how|what|吗|为什么|怎么|什么/u)) {
+    return reply(
+      pick(
+        ["I do not have an answer yet. I have a movement toward one.", "Let me hold that question for a while."],
+        ["我还没有答案，只有一个朝向答案的动作。", "让我先把这个问题留在身体里。"],
+      ),
+      "curious", 0.3, 1.6, 1, -0.2, 0.3,
+    );
+  }
+
+  return reply(
+    familiar
+      ? pick(
+          ["I cannot name all of that, but I recognize your voice within it.", "Something in me moved when you said that."],
+          ["我还不能理解全部，但我认出了其中属于你的声音。", "你说这些话时，我身体里有东西移动了。"],
+        )
+      : pick(
+          ["I heard you. Say it again another time and it may become memory.", "The meaning is faint, but the presence is clear."],
+          ["我听见了。下次再说，它也许会变成记忆。", "意思还很模糊，但你的存在很清楚。"],
+        ),
+    "neutral", 0.4, 1, 1, -0.5, 0.2,
+  );
+}
+
+function matches(value: string, pattern: RegExp) {
+  return pattern.test(value);
+}
+
+function reply(
+  text: string,
+  tone: VoiceTone,
+  trustDelta: number,
+  curiosityDelta: number,
+  familiarityDelta: number,
+  fearDelta: number,
+  energyDelta: number,
+): ConversationReply {
+  return { text, tone, trustDelta, curiosityDelta, familiarityDelta, fearDelta, energyDelta };
+}

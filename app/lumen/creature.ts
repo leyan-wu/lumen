@@ -1,4 +1,5 @@
 import type { HandSnapshot, Mood, Personality, Vec2 } from "./types";
+import type { VoiceTone } from "./conversation";
 
 export type CreatureEvent =
   | "touch"
@@ -38,6 +39,16 @@ export class Creature {
   private affect: Affect = { fear: 0.18, curiosity: 0.12, resonance: 0, solitude: 0.2 };
   private visual = { fear: 0.18, openness: 0.25, curiosity: 0.5 };
   private sparks: Spark[] = [];
+  private heardUntil = 0;
+  private heardTone: VoiceTone = "neutral";
+  private voicePulse = 0;
+
+  hear(tone: VoiceTone, now: number) {
+    this.heardTone = tone;
+    this.heardUntil = now + 2600;
+    this.voicePulse = 1;
+    if (this.initialized) this.releaseSparks(this.position);
+  }
 
   step(
     hand: HandSnapshot,
@@ -174,6 +185,25 @@ export class Creature {
       this.target = aloneFor <= 1450 ? { ...this.position } : { ...this.explorationPoint };
     }
 
+    if (now < this.heardUntil && event !== "touch" && event !== "scare") {
+      if (this.heardTone === "warm") {
+        desiredMood = "happy";
+        resonanceTarget = Math.max(resonanceTarget, 0.82);
+        fearTarget *= 0.24;
+      } else if (this.heardTone === "curious") {
+        desiredMood = "curious";
+        curiosityTarget = Math.max(curiosityTarget, 0.98);
+        resonanceTarget = Math.max(resonanceTarget, 0.3);
+      } else if (this.heardTone === "uneasy") {
+        desiredMood = "scared";
+        fearTarget = Math.max(fearTarget, 0.78);
+      } else {
+        desiredMood = personality.familiarity < 5 ? "newborn" : "curious";
+        curiosityTarget = Math.max(curiosityTarget, 0.72);
+        resonanceTarget = Math.max(resonanceTarget, 0.22);
+      }
+    }
+
     const ritualEvent = this.updateRitual(
       hand,
       personality,
@@ -196,6 +226,7 @@ export class Creature {
     this.affect.resonance = damp(this.affect.resonance, resonanceTarget, resonanceTarget ? 3.2 : 0.72, deltaSeconds);
     this.affect.solitude = damp(this.affect.solitude, solitudeTarget, 0.42, deltaSeconds);
     this.contactStrength = damp(this.contactStrength, this.touching ? 1 : 0, this.touching ? 7 : 2.1, deltaSeconds);
+    this.voicePulse = damp(this.voicePulse, 0, 1.12, deltaSeconds);
     this.transitionMood(desiredMood, now);
 
     this.target.x = clamp(this.target.x, radius * 1.2, width - radius * 1.2);
@@ -341,6 +372,7 @@ export class Creature {
     this.drawAtmosphere(context, width, height, time, center, radius, hand);
     this.drawFilaments(context, center, radius, time, movementAngle, stretch);
     this.drawHalo(context, center, radius, breath);
+    this.drawVoiceRipple(context, center, radius);
     this.drawMembranes(
       context,
       center,
@@ -358,6 +390,29 @@ export class Creature {
 
   private radius(width: number, height: number) {
     return clamp(Math.min(width, height) * 0.13, 72, 126);
+  }
+
+  private drawVoiceRipple(context: CanvasRenderingContext2D, center: Vec2, radius: number) {
+    if (this.voicePulse < 0.025) return;
+    const progress = 1 - this.voicePulse;
+    const color = this.heardTone === "uneasy"
+      ? "216, 152, 164"
+      : this.heardTone === "warm"
+        ? "205, 255, 194"
+        : "154, 241, 218";
+
+    context.save();
+    context.globalCompositeOperation = "screen";
+    context.lineWidth = 1.1;
+    for (let ring = 0; ring < 2; ring += 1) {
+      const staggered = clamp(progress - ring * 0.14, 0, 1);
+      context.globalAlpha = this.voicePulse * (0.32 - ring * 0.09);
+      context.strokeStyle = `rgb(${color})`;
+      context.beginPath();
+      context.arc(center.x, center.y, radius * (0.92 + staggered * 0.9), 0, Math.PI * 2);
+      context.stroke();
+    }
+    context.restore();
   }
 
   private drawHalo(context: CanvasRenderingContext2D, center: Vec2, radius: number, breath: number) {

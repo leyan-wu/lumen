@@ -4,6 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Creature } from "./lumen/creature";
 import { HandTracker } from "./lumen/hand-tracker";
 import {
+  createConversationReply,
+  type ConversationReply,
+} from "./lumen/conversation";
+import {
   DEFAULT_PERSONALITY,
   loadPersonality,
   savePersonality,
@@ -13,6 +17,41 @@ import {
 } from "./lumen/types";
 
 type CameraState = "waiting" | "loading" | "active" | "error";
+type VoiceState = "idle" | "listening" | "processing" | "error" | "unsupported";
+type VoiceLanguage = "en-US" | "zh-CN";
+
+type RecognitionResultLike = {
+  isFinal: boolean;
+  0: { transcript: string };
+};
+
+type RecognitionEventLike = {
+  resultIndex: number;
+  results: { length: number; [index: number]: RecognitionResultLike };
+};
+
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  maxAlternatives: number;
+  onstart: (() => void) | null;
+  onresult: ((event: RecognitionEventLike) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type SpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
 
 const EMPTY_HAND: HandSnapshot = {
   present: false,
@@ -39,6 +78,7 @@ export default function LumenExperience() {
   const creatureRef = useRef(new Creature());
   const trackerRef = useRef<HandTracker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const handRef = useRef<HandSnapshot>(EMPTY_HAND);
   const cameraStateRef = useRef<CameraState>("waiting");
   const [personality, setPersonality] = useState<Personality>(DEFAULT_PERSONALITY);
@@ -47,8 +87,26 @@ export default function LumenExperience() {
   const [previewVisible, setPreviewVisible] = useState(true);
   const [handPresent, setHandPresent] = useState(false);
   const [mood, setMood] = useState<Mood>("idle");
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceLanguage, setVoiceLanguage] = useState<VoiceLanguage>("en-US");
   const [message, announce] = useMessageQueue("Lumen is listening for you");
   const [speech, speak] = useLumenSpeech();
+
+  const rememberVoice = useCallback((response: ConversationReply) => {
+    const previous = personalityRef.current;
+    const next: Personality = {
+      ...previous,
+      trust: clamp(previous.trust + response.trustDelta),
+      curiosity: clamp(previous.curiosity + response.curiosityDelta),
+      energy: clamp(previous.energy + response.energyDelta),
+      familiarity: clamp(previous.familiarity + response.familiarityDelta),
+      fear: clamp(previous.fear + response.fearDelta),
+      interactionCount: previous.interactionCount + 1,
+    };
+    personalityRef.current = next;
+    setPersonality(next);
+    savePersonality(next);
+  }, []);
 
   const updateCameraState = useCallback((state: CameraState) => {
     cameraStateRef.current = state;
@@ -113,6 +171,8 @@ export default function LumenExperience() {
       const memory = loadPersonality();
       personalityRef.current = memory;
       setPersonality(memory);
+      const preferredLanguage = navigator.languages?.find((language) => /^(zh|en)/i.test(language));
+      setVoiceLanguage(preferredLanguage?.toLocaleLowerCase().startsWith("zh") ? "zh-CN" : "en-US");
       announce(
         memory.familiarity > 4
           ? "Raise one hand when you are ready to return."
@@ -258,9 +318,91 @@ export default function LumenExperience() {
   }, [announce, remember, speak]);
 
   useEffect(() => () => {
+    recognitionRef.current?.abort();
     trackerRef.current?.close();
     streamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
+
+  const handleVoiceTranscript = useCallback((transcript: string) => {
+    const cleanTranscript = transcript.trim();
+    if (!cleanTranscript) return;
+
+    setVoiceState("processing");
+    const response = createConversationReply(
+      cleanTranscript,
+      personalityRef.current,
+      personalityRef.current.interactionCount,
+    );
+    creatureRef.current.hear(response.tone, performance.now());
+    rememberVoice(response);
+    announce(`You: “${cleanTranscript}”`, Math.max(4200, cleanTranscript.length * 90), true);
+    speak(response.text, readingDuration(response.text), true);
+    setVoiceState("idle");
+  }, [announce, rememberVoice, speak]);
+
+  const toggleVoice = useCallback(() => {
+    if (voiceState === "listening") {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Recognition) {
+      setVoiceState("unsupported");
+      announce("Voice recognition needs Chrome or another supported browser.", 5200, true);
+      return;
+    }
+
+    recognitionRef.current?.abort();
+    const recognition = new Recognition();
+    recognitionRef.current = recognition;
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = voiceLanguage;
+    recognition.maxAlternatives = 1;
+    let finalTranscript = "";
+    let handled = false;
+
+    recognition.onstart = () => {
+      setVoiceState("listening");
+      announce("Lumen is attending to your voice…", 3400, true);
+    };
+    recognition.onresult = (event) => {
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (result.isFinal) finalTranscript += result[0]?.transcript ?? "";
+      }
+      if (finalTranscript.trim() && !handled) {
+        handled = true;
+        handleVoiceTranscript(finalTranscript);
+      }
+    };
+    recognition.onerror = (event) => {
+      handled = true;
+      setVoiceState(event.error === "not-allowed" ? "error" : "idle");
+      announce(
+        event.error === "not-allowed"
+          ? "Lumen cannot hear you until microphone access is allowed."
+          : "Your voice dissolved before Lumen could hold it.",
+        5200,
+        true,
+      );
+    };
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      if (!handled) {
+        setVoiceState("idle");
+        announce("Lumen heard only silence.", 3400);
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch {
+      setVoiceState("error");
+      announce("Lumen could not open a path to your voice.", 4400, true);
+    }
+  }, [announce, handleVoiceTranscript, voiceLanguage, voiceState]);
 
   const startCamera = async () => {
     if (cameraStateRef.current === "loading") return;
@@ -303,6 +445,9 @@ export default function LumenExperience() {
   };
 
   const stopCamera = () => {
+    recognitionRef.current?.abort();
+    recognitionRef.current = null;
+    setVoiceState("idle");
     trackerRef.current?.close();
     trackerRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -367,9 +512,32 @@ export default function LumenExperience() {
             <span className="button-arrow" aria-hidden="true">↗</span>
           </button>
         ) : (
-          <button className="quiet-button" onClick={stopCamera} aria-label="Turn off camera">
-            end visit
-          </button>
+          <div className="visit-controls">
+            <div className="voice-control">
+              <button
+                className={`voice-button ${voiceState === "listening" ? "is-listening" : ""}`}
+                type="button"
+                onClick={toggleVoice}
+                aria-pressed={voiceState === "listening"}
+                aria-label={voiceState === "listening" ? "Stop listening" : "Speak to Lumen"}
+              >
+                <span className="voice-orb" aria-hidden="true" />
+                <span>{voiceState === "listening" ? "listening" : voiceState === "processing" ? "holding voice" : "speak softly"}</span>
+              </button>
+              <button
+                className="voice-language"
+                type="button"
+                onClick={() => setVoiceLanguage((language) => language === "en-US" ? "zh-CN" : "en-US")}
+                disabled={voiceState === "listening"}
+                aria-label={`Voice language: ${voiceLanguage === "zh-CN" ? "Chinese" : "English"}. Click to change.`}
+              >
+                {voiceLanguage === "zh-CN" ? "中文" : "EN"}
+              </button>
+            </div>
+            <button className="quiet-button" onClick={stopCamera} aria-label="Turn off camera">
+              end visit
+            </button>
+          </div>
         )}
       </section>
 
@@ -378,13 +546,17 @@ export default function LumenExperience() {
         <span className="memory-line"><i style={{ width: `${personality.trust}%` }} /></span>
       </aside>
 
-      <p className="privacy">Your camera stays on this device</p>
+      <p className="privacy">Camera stays on this device · voice recognition is handled by your browser</p>
     </main>
   );
 }
 
 function clamp(value: number) {
   return Math.max(0, Math.min(100, value));
+}
+
+function readingDuration(text: string) {
+  return Math.max(5000, Math.min(8200, 4100 + text.length * 75));
 }
 
 type MessageEntry = { text: string; duration: number };
