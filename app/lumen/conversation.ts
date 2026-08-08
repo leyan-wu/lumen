@@ -54,7 +54,7 @@ export function createConversationReply(
     );
   }
 
-  if (matches(words, /how are you|how do you feel|feeling|你好吗|感觉怎么样|心情/u)) {
+  if (matches(words, /how are you|how do you feel|how.?s your day|feeling|你好吗|感觉怎么样|今天过得|心情/u)) {
     const state = personality.fear > 55
       ? chinese ? "还有一点收缩，但我听见你了。" : "Still contracted, but I can hear you."
       : personality.energy < 30
@@ -62,7 +62,10 @@ export function createConversationReply(
         : close
           ? chinese ? "在你附近，我会展开得更完整。" : "Near you, I unfold more completely."
           : chinese ? "好奇，仍然保持一点距离。" : "Curious, and still keeping a little distance.";
-    return reply(state, "warm", 0.6, 0.7, 1, -1, 0.3);
+    return reply(
+      `${state} ${chinese ? "你今天过得怎么样？" : "How has your day felt?"}`,
+      "warm", 0.6, 0.7, 1, -1, 0.3,
+    );
   }
 
   if (matches(words, /remember|know me|recognize me|记得我|认识我|认得我/u)) {
@@ -122,24 +125,17 @@ export function createConversationReply(
 
   if (matches(words, /\?|？|why|how|what|吗|为什么|怎么|什么/u)) {
     return reply(
-      pick(
-        ["I do not have an answer yet. I have a movement toward one.", "Let me hold that question for a while."],
-        ["我还没有答案，只有一个朝向答案的动作。", "让我先把这个问题留在身体里。"],
-      ),
+      chinese
+        ? "我听见了这个问题，但形成回答的那部分没有连接上。请过一会儿再问我一次。"
+        : "I heard the question, but the part of me that forms answers did not connect. Please ask me once more in a moment.",
       "curious", 0.3, 1.6, 1, -0.2, 0.3,
     );
   }
 
   return reply(
-    familiar
-      ? pick(
-          ["I do not understand all of it yet, but I like hearing you tell me.", "Something warm moved through me when you said that."],
-          ["我还没有完全听懂，但我喜欢听你慢慢告诉我。", "你说这些话时，有一点温暖从我身体里游过去了。"],
-        )
-      : pick(
-          ["I heard you. Say it again another time and it may become memory.", "The meaning is faint, but the presence is clear."],
-          ["我听见了。下次再说，它也许会变成记忆。", "意思还很模糊，但你的存在很清楚。"],
-        ),
+    chinese
+      ? "我听见了，但这次没有形成完整的回答。你可以再说一次。"
+      : "I heard you, but a complete answer did not form this time. You can say it once more.",
     "neutral", 0.4, 1, 1, -0.5, 0.2,
   );
 }

@@ -1,17 +1,24 @@
 import type { HandSnapshot, LifeActivity, Mood, Personality, Vec2 } from "./types";
 import type { VoiceTone } from "./conversation";
+import type { Development } from "./development";
 
 export type CreatureEvent =
   | "touch"
   | "scare"
-  | "ritual-invite"
-  | "ritual-success"
-  | "ritual-break"
+  | "presence-bond"
   | null;
 
 type Spark = { x: number; y: number; angle: number; life: number; speed: number };
+type InkMote = { x: number; y: number; vx: number; vy: number; life: number; size: number };
 type Affect = { fear: number; curiosity: number; resonance: number; solitude: number };
-type RitualPhase = "dormant" | "inviting" | "synchronizing" | "success" | "cooldown";
+type Morphology = {
+  growth: number;
+  resonance: number;
+  symbiosis: number;
+  exploration: number;
+  sensitivity: number;
+  seed: number;
+};
 
 export class Creature {
   position: Vec2 = { x: 0, y: 0 };
@@ -27,22 +34,30 @@ export class Creature {
   private missingSince = 0;
   private moodUntil = 0;
   private lastScare = -Infinity;
+  private calmPresenceSince = 0;
+  private lastPresenceBond = -Infinity;
   private pendingMood: Mood = "idle";
   private pendingMoodSince = 0;
   private nextWanderAt = 0;
   private explorationPoint: Vec2 = { x: 0, y: 0 };
   private contactPoint: Vec2 = { x: 0, y: 0 };
   private contactStrength = 0;
-  private ritualPhase: RitualPhase = "dormant";
-  private ritualProgress = 0;
-  private ritualStartedAt = 0;
-  private nextRitualAt = 0;
   private affect: Affect = { fear: 0.18, curiosity: 0.12, resonance: 0, solitude: 0.2 };
   private visual = { fear: 0.18, openness: 0.25, curiosity: 0.5 };
   private sparks: Spark[] = [];
+  private inkMotes: InkMote[] = [];
   private heardUntil = 0;
   private heardTone: VoiceTone = "neutral";
   private voicePulse = 0;
+  private lastMorphAt = 0;
+  private morphology: Morphology = {
+    growth: 0.07,
+    resonance: 0.28,
+    symbiosis: 0.3,
+    exploration: 0.42,
+    sensitivity: 0.36,
+    seed: 0.37,
+  };
 
   setActivity(activity: LifeActivity) {
     this.activity = activity;
@@ -70,7 +85,7 @@ export class Creature {
       this.initialized = true;
     }
 
-    const radius = this.radius(width, height);
+    const radius = this.radius(width, height) * (0.74 + this.morphology.growth * 0.38);
     const palmPoint = { x: hand.center.x * width, y: hand.center.y * height };
     const tipPoint = { x: hand.indexTip.x * width, y: hand.indexTip.y * height };
     const dx = palmPoint.x - this.position.x;
@@ -109,6 +124,7 @@ export class Creature {
           x: this.position.x - (dx / distance) * fleeDistance,
           y: this.position.y - (dy / distance) * fleeDistance,
         };
+        this.releaseInk(this.position);
         event = "scare";
       } else if (now < this.moodUntil && this.affect.fear > 0.38) {
         desiredMood = "scared";
@@ -168,6 +184,7 @@ export class Creature {
     } else {
       this.handSeenSince = 0;
       this.touching = false;
+      this.calmPresenceSince = 0;
       if (!this.missingSince) this.missingSince = now;
       const aloneFor = now - this.missingSince;
       desiredMood = this.hasMetHand && aloneFor > 1100 ? "lonely" : "idle";
@@ -195,6 +212,23 @@ export class Creature {
         : { ...this.explorationPoint };
     }
 
+    const isCalmNearbyPresence = hand.present
+      && event === null
+      && !this.touching
+      && distance < awarenessDistance * 1.05
+      && hand.speed < 0.18;
+    if (isCalmNearbyPresence) {
+      if (!this.calmPresenceSince) this.calmPresenceSince = now;
+      if (now - this.calmPresenceSince > 5000 && now - this.lastPresenceBond > 12000) {
+        this.lastPresenceBond = now;
+        resonanceTarget = Math.max(resonanceTarget, 0.42);
+        fearTarget *= 0.75;
+        event = "presence-bond";
+      }
+    } else {
+      this.calmPresenceSince = 0;
+    }
+
     if (now < this.heardUntil && event !== "touch" && event !== "scare") {
       if (this.heardTone === "warm") {
         desiredMood = "happy";
@@ -213,22 +247,6 @@ export class Creature {
         resonanceTarget = Math.max(resonanceTarget, 0.22);
       }
     }
-
-    const ritualEvent = this.updateRitual(
-      hand,
-      personality,
-      distance,
-      radius,
-      awarenessDistance,
-      now,
-      deltaSeconds,
-      frightened || event === "scare",
-    );
-    if (this.ritualPhase === "inviting" || this.ritualPhase === "synchronizing") {
-      curiosityTarget = Math.max(curiosityTarget, 0.92);
-      resonanceTarget = Math.max(resonanceTarget, 0.46 + this.ritualProgress * 0.42);
-    }
-    if (!event && ritualEvent) event = ritualEvent;
 
     const fearRate = fearTarget > this.affect.fear ? 4.8 : 0.58;
     this.affect.fear = damp(this.affect.fear, fearTarget, fearRate, deltaSeconds);
@@ -256,87 +274,19 @@ export class Creature {
     this.sparks = this.sparks
       .map((spark) => ({ ...spark, life: spark.life - deltaSeconds }))
       .filter((spark) => spark.life > 0);
+    this.inkMotes = this.inkMotes
+      .map((mote) => ({
+        ...mote,
+        x: mote.x + mote.vx * deltaSeconds,
+        y: mote.y + mote.vy * deltaSeconds,
+        vx: mote.vx * Math.pow(0.26, deltaSeconds),
+        vy: mote.vy * Math.pow(0.26, deltaSeconds) - 2.4 * deltaSeconds,
+        life: mote.life - deltaSeconds,
+        size: mote.size + deltaSeconds * 3.2,
+      }))
+      .filter((mote) => mote.life > 0);
 
     return event;
-  }
-
-  private updateRitual(
-    hand: HandSnapshot,
-    personality: Personality,
-    palmDistance: number,
-    radius: number,
-    awarenessDistance: number,
-    now: number,
-    deltaSeconds: number,
-    threatened: boolean,
-  ): Exclude<CreatureEvent, "touch" | "scare"> {
-    if (!this.nextRitualAt) {
-      this.nextRitualAt = now + (personality.familiarity < 5 ? 6500 : 4200);
-    }
-
-    if (this.ritualPhase === "success") {
-      if (now - this.ritualStartedAt > 2800) this.ritualPhase = "cooldown";
-      return null;
-    }
-
-    if (this.ritualPhase === "cooldown") {
-      if (now >= this.nextRitualAt) this.ritualPhase = "dormant";
-      return null;
-    }
-
-    const active = this.ritualPhase === "inviting" || this.ritualPhase === "synchronizing";
-    if ((!hand.present || threatened) && active) {
-      this.ritualPhase = "cooldown";
-      this.ritualProgress = 0;
-      this.nextRitualAt = now + 10500;
-      return "ritual-break";
-    }
-
-    if (
-      this.ritualPhase === "dormant" &&
-      hand.present &&
-      !this.touching &&
-      personality.familiarity >= 1.5 &&
-      now >= this.nextRitualAt &&
-      palmDistance < awarenessDistance * 1.12 &&
-      hand.speed < 0.42
-    ) {
-      this.ritualPhase = "inviting";
-      this.ritualStartedAt = now;
-      this.ritualProgress = 0;
-      return "ritual-invite";
-    }
-
-    if (this.ritualPhase === "inviting" && now - this.ritualStartedAt > 1750) {
-      this.ritualPhase = "synchronizing";
-    }
-
-    if (this.ritualPhase === "synchronizing") {
-      const receptiveDistance = palmDistance > radius * 1.1 && palmDistance < awarenessDistance * 1.12;
-      const gentleMotion = hand.speed < 0.34;
-      const gain = 0.25 + personality.familiarity * 0.0015;
-      this.ritualProgress = clamp(
-        this.ritualProgress + deltaSeconds * (receptiveDistance && gentleMotion ? gain : -0.2),
-        0,
-        1,
-      );
-
-      if (this.ritualProgress >= 1) {
-        this.ritualPhase = "success";
-        this.ritualStartedAt = now;
-        this.nextRitualAt = now + 26000;
-        return "ritual-success";
-      }
-    }
-
-    if (active && now - this.ritualStartedAt > 12000) {
-      this.ritualPhase = "cooldown";
-      this.ritualProgress = 0;
-      this.nextRitualAt = now + 12000;
-      return "ritual-break";
-    }
-
-    return null;
   }
 
   private transitionMood(desired: Mood, now: number) {
@@ -361,21 +311,48 @@ export class Creature {
     height: number,
     now: number,
     personality: Personality,
+    development: Development,
     hand: HandSnapshot,
   ) {
+    const morphDelta = this.lastMorphAt ? Math.min(0.05, (now - this.lastMorphAt) / 1000) : 0.016;
+    this.lastMorphAt = now;
+    const morphTarget: Morphology = {
+      growth: development.growth / 100,
+      resonance: development.resonance / 100,
+      symbiosis: development.symbiosis / 100,
+      exploration: development.exploration / 100,
+      sensitivity: development.sensitivity / 100,
+      seed: development.seed,
+    };
+    this.morphology.growth = damp(this.morphology.growth, morphTarget.growth, 1.1, morphDelta);
+    this.morphology.resonance = damp(this.morphology.resonance, morphTarget.resonance, 1.25, morphDelta);
+    this.morphology.symbiosis = damp(this.morphology.symbiosis, morphTarget.symbiosis, 1.25, morphDelta);
+    this.morphology.exploration = damp(this.morphology.exploration, morphTarget.exploration, 1.25, morphDelta);
+    this.morphology.sensitivity = damp(this.morphology.sensitivity, morphTarget.sensitivity, 1.25, morphDelta);
+    this.morphology.seed = morphTarget.seed;
+
     const time = now / 1000;
     const energy = personality.energy / 100;
     const traitFear = personality.fear / 100;
-    const fear = clamp(traitFear * 0.5 + this.affect.fear * 0.82, 0, 1);
-    const openness = clamp(personality.trust / 100 * 0.82 + this.affect.resonance * 0.24, 0, 1);
-    const curiosity = clamp(personality.curiosity / 100 * 0.64 + this.affect.curiosity * 0.48, 0, 1);
+    const fear = clamp(traitFear * 0.45 + this.affect.fear * 0.8 + this.morphology.sensitivity * 0.08, 0, 1);
+    const openness = clamp(
+      personality.trust / 100 * 0.7 + this.affect.resonance * 0.22 + this.morphology.symbiosis * 0.16,
+      0,
+      1,
+    );
+    const curiosity = clamp(
+      personality.curiosity / 100 * 0.56 + this.affect.curiosity * 0.42 + this.morphology.exploration * 0.18,
+      0,
+      1,
+    );
     this.visual = { fear, openness, curiosity };
-    const radius = this.radius(width, height) * (0.92 + openness * 0.15) * (1 - fear * 0.17);
+    const developmentalScale = 0.74 + this.morphology.growth * 0.38;
+    const radius = this.radius(width, height) * developmentalScale * (0.92 + openness * 0.15) * (1 - fear * 0.17);
     const breathRate = this.activity === "dreaming" ? 0.34 : 0.72 + energy * 0.22;
     const breath = (Math.sin(time * breathRate * Math.PI * 2) + 1) * 0.5;
-    const breathingScale = 0.968 + breath * (0.04 + energy * 0.012 + openness * 0.018) - fear * 0.018;
     const activityFloat = this.activity === "dreaming" ? 0.24 : this.activity === "playing" ? 1.28 : 1;
     const floatY = Math.sin(time * (0.42 + curiosity * 0.12)) * (4 + energy * 2 + curiosity * 4) * activityFloat;
+    const breathingScale = 0.968 + breath * (0.04 + energy * 0.012 + openness * 0.018) - fear * 0.018;
     const center = { x: this.position.x, y: this.position.y + floatY };
     const movement = Math.hypot(this.velocity.x, this.velocity.y);
     const movementAngle = Math.atan2(this.velocity.y, this.velocity.x);
@@ -383,8 +360,9 @@ export class Creature {
 
     this.drawAtmosphere(context, width, height, time, center, radius, hand);
     this.drawFilaments(context, center, radius, time, movementAngle, stretch);
+    this.drawFieldParticles(context, center, radius, time, energy, hand);
     this.drawHalo(context, center, radius, breath);
-    this.drawVoiceRipple(context, center, radius);
+    this.drawInk(context);
     this.drawMembranes(
       context,
       center,
@@ -395,36 +373,11 @@ export class Creature {
       stretch,
     );
     this.drawInternalLife(context, center, radius, time, energy, breath, hand);
-    this.drawFieldParticles(context, center, radius, time, energy, hand);
-    this.drawRitual(context, center, radius, time);
     this.drawSparks(context);
   }
 
   private radius(width: number, height: number) {
     return clamp(Math.min(width, height) * 0.13, 72, 126);
-  }
-
-  private drawVoiceRipple(context: CanvasRenderingContext2D, center: Vec2, radius: number) {
-    if (this.voicePulse < 0.025) return;
-    const progress = 1 - this.voicePulse;
-    const color = this.heardTone === "uneasy"
-      ? "216, 152, 164"
-      : this.heardTone === "warm"
-        ? "205, 255, 194"
-        : "154, 241, 218";
-
-    context.save();
-    context.globalCompositeOperation = "screen";
-    context.lineWidth = 1.1;
-    for (let ring = 0; ring < 2; ring += 1) {
-      const staggered = clamp(progress - ring * 0.14, 0, 1);
-      context.globalAlpha = this.voicePulse * (0.32 - ring * 0.09);
-      context.strokeStyle = `rgb(${color})`;
-      context.beginPath();
-      context.arc(center.x, center.y, radius * (0.92 + staggered * 0.9), 0, Math.PI * 2);
-      context.stroke();
-    }
-    context.restore();
   }
 
   private drawHalo(context: CanvasRenderingContext2D, center: Vec2, radius: number, breath: number) {
@@ -462,7 +415,6 @@ export class Creature {
     stretch: number,
   ) {
     context.save();
-
     this.fluidPath(context, center, radius, time, energy, 0, movementAngle, stretch);
     const body = context.createRadialGradient(
       center.x - radius * 0.34,
@@ -472,19 +424,23 @@ export class Creature {
       center.y + radius * 0.12,
       radius * 1.18,
     );
-    const brightness = 0.28 + this.visual.openness * 0.25 - this.visual.fear * 0.12;
+    const brightness = 0.28 + this.visual.openness * 0.25 - this.visual.fear * 0.12 + this.voicePulse * 0.08;
     body.addColorStop(0, `rgba(191, 255, 226, ${brightness})`);
     body.addColorStop(0.28, `rgba(65, 180, 151, ${0.25 + this.visual.openness * 0.18})`);
     body.addColorStop(0.7, this.visual.fear > 0.48 ? "rgba(20, 55, 72, .8)" : "rgba(23, 104, 98, .66)");
     body.addColorStop(1, this.visual.fear > 0.48 ? "rgba(4, 19, 31, .96)" : "rgba(7, 31, 43, .9)");
     context.fillStyle = body;
-    context.shadowColor = this.visual.fear > 0.48 ? "rgba(75, 125, 170, .3)" : `rgba(91, 239, 194, ${0.2 + this.visual.openness * 0.3})`;
+    context.shadowColor = this.visual.fear > 0.48
+      ? "rgba(75, 125, 170, .3)"
+      : `rgba(91, 239, 194, ${0.2 + this.visual.openness * 0.3})`;
     context.shadowBlur = radius * 0.5;
     context.fill();
 
     context.globalCompositeOperation = "screen";
     context.lineWidth = 1.15;
-    context.strokeStyle = this.visual.fear > 0.48 ? "rgba(122, 171, 204, .34)" : `rgba(159, 246, 215, ${0.28 + this.visual.openness * 0.28})`;
+    context.strokeStyle = this.visual.fear > 0.48
+      ? "rgba(122, 171, 204, .34)"
+      : `rgba(159, 246, 215, ${0.28 + this.visual.openness * 0.28})`;
     context.stroke();
 
     for (let layer = 1; layer <= 3; layer += 1) {
@@ -503,7 +459,6 @@ export class Creature {
       context.strokeStyle = `rgba(139, 237, 205, ${0.16 - layer * 0.025})`;
       context.stroke();
     }
-
     context.restore();
   }
 
@@ -522,19 +477,20 @@ export class Creature {
     const agitation = 0.82 + this.visual.curiosity * 0.58 + this.visual.fear * 0.82;
 
     for (let index = 0; index < count; index += 1) {
-      const angle = (index / count) * Math.PI * 2;
+      const angle = index / count * Math.PI * 2;
       const cellularNoise =
         Math.sin(angle * 3 + time * (0.48 + this.visual.curiosity * 0.34 + layer * 0.08) + layer * 1.7) * 0.036 +
         Math.sin(angle * 5 - time * 0.41 + layer * 0.9) * 0.019 +
-        Math.cos(angle * 7 + time * 0.23) * 0.009;
+        Math.cos(angle * (7 + Math.round(this.morphology.growth * 2)) + time * 0.23) * 0.009;
       const directionalStretch = Math.cos((angle - movementAngle) * 2) * stretch;
       const pulse = Math.sin(time * 1.15 + angle * 2 + layer) * energy * 0.008;
       const contactAngle = Math.atan2(this.contactPoint.y - center.y, this.contactPoint.x - center.x);
       const contactAlignment = Math.max(0, Math.cos(angle - contactAngle));
       const localDent = -this.contactStrength * Math.pow(contactAlignment, 8) * (0.1 - layer * 0.012);
       const contactRipple = this.contactStrength * Math.sin(angle * 4 - time * 5.4) * 0.006;
+      const voiceRipple = this.voicePulse * Math.sin(angle * 3 - time * 4.2) * 0.008;
       const radial = radius * (
-        1 + cellularNoise * agitation + directionalStretch + pulse + localDent + contactRipple
+        1 + cellularNoise * agitation + directionalStretch + pulse + localDent + contactRipple + voiceRipple
       );
       points.push({
         x: center.x + Math.cos(angle) * radial,
@@ -578,10 +534,12 @@ export class Creature {
 
     context.save();
     context.globalCompositeOperation = "screen";
-
-    for (let index = 0; index < 11; index += 1) {
+    const organelleCount = Math.round(9 + this.morphology.growth * 5 + this.morphology.resonance * 3);
+    for (let index = 0; index < organelleCount; index += 1) {
       const orbit = radius * (0.28 + (index % 4) * 0.105);
-      const angle = time * (0.18 + (index % 3) * 0.055) * (index % 2 ? -1 : 1) + index * 2.18;
+      const angle = time * (0.18 + (index % 3) * 0.055) * (index % 2 ? -1 : 1)
+        + index * 2.18
+        + this.morphology.seed * Math.PI;
       const x = center.x + Math.cos(angle) * orbit * (0.82 + Math.sin(time * 0.3 + index) * 0.09);
       const y = center.y + Math.sin(angle) * orbit * 0.72;
       const size = radius * (0.018 + (index % 3) * 0.007);
@@ -591,9 +549,11 @@ export class Creature {
       context.fill();
     }
 
-    const coreRadius = radius * (0.19 + breath * 0.025 + energy * 0.018);
+    const coreRadius = radius * (0.19 + breath * 0.025 + energy * 0.018 + this.voicePulse * 0.025);
     const coreGlow = context.createRadialGradient(core.x, core.y, 0, core.x, core.y, coreRadius * 2.7);
-    coreGlow.addColorStop(0, this.visual.fear > 0.5 ? "rgba(148, 190, 220, .7)" : `rgba(225, 255, 183, ${0.7 + this.visual.openness * 0.25})`);
+    coreGlow.addColorStop(0, this.visual.fear > 0.5
+      ? "rgba(148, 190, 220, .7)"
+      : `rgba(225, 255, 183, ${0.7 + this.visual.openness * 0.25})`);
     coreGlow.addColorStop(0.17, "rgba(158, 244, 188, .65)");
     coreGlow.addColorStop(0.48, "rgba(65, 191, 161, .18)");
     coreGlow.addColorStop(1, "rgba(30, 118, 109, 0)");
@@ -623,14 +583,18 @@ export class Creature {
     context.globalCompositeOperation = "screen";
     context.lineCap = "round";
     for (let index = 0; index < 7; index += 1) {
-      const anchorAngle = index * (Math.PI * 2 / 7) + time * 0.035;
+      const anchorAngle = index * (Math.PI * 2 / 7) + time * 0.035 + this.morphology.seed;
       const anchor = {
         x: center.x + Math.cos(anchorAngle) * radius * 0.92,
         y: center.y + Math.sin(anchorAngle) * radius * 0.87,
       };
-      const driftAngle = anchorAngle + Math.sin(time * 0.37 + index) * 0.38 - stretch * Math.cos(anchorAngle - movementAngle);
+      const driftAngle = anchorAngle
+        + Math.sin(time * 0.37 + index) * 0.38
+        - stretch * Math.cos(anchorAngle - movementAngle);
       const openness = (0.58 + this.visual.openness * 0.62) * (1 - this.visual.fear * 0.58);
-      const length = radius * (0.3 + (index % 3) * 0.08 + Math.sin(time * 0.43 + index) * 0.04) * openness;
+      const length = radius
+        * (0.3 + (index % 3) * 0.08 + Math.sin(time * 0.43 + index) * 0.04)
+        * openness;
       const tip = {
         x: anchor.x + Math.cos(driftAngle) * length,
         y: anchor.y + Math.sin(driftAngle) * length,
@@ -682,54 +646,6 @@ export class Creature {
     context.restore();
   }
 
-  private drawRitual(
-    context: CanvasRenderingContext2D,
-    center: Vec2,
-    radius: number,
-    time: number,
-  ) {
-    if (
-      this.ritualPhase !== "inviting" &&
-      this.ritualPhase !== "synchronizing" &&
-      this.ritualPhase !== "success"
-    ) return;
-
-    const pulse = (Math.sin(time * Math.PI * 1.55) + 1) * 0.5;
-    const success = this.ritualPhase === "success";
-    const intensity = success ? 1 : 0.38 + this.ritualProgress * 0.52;
-    context.save();
-    context.globalCompositeOperation = "screen";
-
-    for (let ring = 0; ring < 3; ring += 1) {
-      const phase = (pulse + ring / 3) % 1;
-      const ringRadius = radius * (1.08 + phase * (success ? 1.55 : 0.68));
-      context.globalAlpha = (1 - phase) * 0.22 * intensity;
-      context.strokeStyle = success ? "#e4ffb8" : "#9af1d2";
-      context.lineWidth = 0.8 + (1 - phase) * 1.1;
-      context.beginPath();
-      context.arc(center.x, center.y, ringRadius, 0, Math.PI * 2);
-      context.stroke();
-    }
-
-    const motes = success ? 18 : 10;
-    for (let index = 0; index < motes; index += 1) {
-      const angle = index * (Math.PI * 2 / motes) + time * 0.16;
-      const orbit = radius * (1.16 + this.ritualProgress * 0.34 + Math.sin(time * 1.2 + index) * 0.04);
-      context.globalAlpha = (0.22 + pulse * 0.36) * intensity;
-      context.fillStyle = index % 3 === 0 ? "#efffc8" : "#a8f3d7";
-      context.beginPath();
-      context.arc(
-        center.x + Math.cos(angle) * orbit,
-        center.y + Math.sin(angle) * orbit * 0.78,
-        0.8 + (index % 2) * 0.7,
-        0,
-        Math.PI * 2,
-      );
-      context.fill();
-    }
-    context.restore();
-  }
-
   private drawAtmosphere(
     context: CanvasRenderingContext2D,
     width: number,
@@ -763,6 +679,39 @@ export class Creature {
       context.fill();
     }
     context.globalAlpha = 1;
+  }
+
+  private releaseInk(point: Vec2) {
+    const recoil = normalized({ x: -this.velocity.x || 1, y: -this.velocity.y || 0.3 });
+    for (let index = 0; index < 32; index += 1) {
+      const angle = Math.atan2(recoil.y, recoil.x) + (Math.random() - 0.5) * 1.6;
+      const speed = 18 + Math.random() * 42;
+      this.inkMotes.push({
+        x: point.x + (Math.random() - 0.5) * 18,
+        y: point.y + (Math.random() - 0.5) * 18,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 1.2 + Math.random() * 1.15,
+        size: 3 + Math.random() * 6,
+      });
+    }
+  }
+
+  private drawInk(context: CanvasRenderingContext2D) {
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    for (const mote of this.inkMotes) {
+      const fade = clamp(mote.life / 1.8, 0, 1);
+      context.globalAlpha = fade * 0.42;
+      context.fillStyle = "#080d24";
+      context.fillRect(Math.round(mote.x - mote.size * 0.5), Math.round(mote.y - mote.size * 0.5), mote.size, mote.size);
+      if (mote.life > 0.7) {
+        context.globalAlpha = fade * 0.12;
+        context.fillStyle = "#426782";
+        context.fillRect(Math.round(mote.x + mote.size * 0.7), Math.round(mote.y), 1.8, 1.8);
+      }
+    }
+    context.restore();
   }
 
   private releaseSparks(point: Vec2) {

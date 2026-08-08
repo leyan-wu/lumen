@@ -4,6 +4,7 @@ type ConversationBody = {
   transcript?: unknown;
   language?: unknown;
   personality?: unknown;
+  development?: unknown;
   history?: unknown;
   activity?: unknown;
 };
@@ -16,6 +17,7 @@ type TranscriptionBody = {
 type SpeechBody = {
   text?: unknown;
   language?: unknown;
+  voice?: unknown;
 };
 
 type DreamBody = {
@@ -32,8 +34,17 @@ type PersonalitySnapshot = {
   fear: number;
 };
 
+type DevelopmentSnapshot = {
+  growth: number;
+  resonance: number;
+  symbiosis: number;
+  exploration: number;
+  sensitivity: number;
+};
+
 type HistoryEntry = { role: "user" | "assistant"; content: string };
 type LifeActivity = "dreaming" | "exploring" | "feeding" | "playing";
+type LumenVoice = "Maia" | "Andre" | "Neil";
 
 type RateLimit = { count: number; resetsAt: number };
 
@@ -59,11 +70,12 @@ export async function handleLumenConversation(request: Request, apiKey?: string)
 
   const language = body.language === "zh-CN" ? "zh-CN" : "en-US";
   const personality = cleanPersonality(body.personality);
+  const development = cleanDevelopment(body.development);
   const history = cleanHistory(body.history);
   const activity = cleanActivity(body.activity);
 
   try {
-    const generated = await generateReply(apiKey, transcript, language, personality, history, activity);
+    const generated = await generateReply(apiKey, transcript, language, personality, development, history, activity);
     return json({ ...generated, source: "bailian" });
   } catch (error) {
     console.error("Bailian conversation failed", safeError(error));
@@ -136,13 +148,13 @@ export async function handleLumenSpeech(request: Request, apiKey?: string) {
   } catch {
     return json({ error: "Invalid request" }, 400);
   }
-  const text = cleanText(body.text, 180);
+  const text = cleanText(body.text, 360);
   if (!text) return json({ error: "No speech was provided." }, 400);
   const language = body.language === "zh-CN" ? "zh-CN" : "en-US";
+  const voice = cleanVoice(body.voice);
 
   try {
-    const audio = await synthesizeReply(apiKey, text, language);
-    return json({ audio, source: "bailian" });
+    return await streamSynthesizeReply(apiKey, text, language, voice);
   } catch (error) {
     console.error("Bailian speech synthesis failed", safeError(error));
     if (isArrearage(error)) {
@@ -170,7 +182,7 @@ export async function handleLumenDream(request: Request, apiKey?: string) {
   const languageInstruction = language === "zh-CN"
     ? "只用自然简体中文，25到55个汉字。"
     : "Use natural English only, 10 to 24 words.";
-  const system = `Write one brief dream fragment experienced by Lumen, a small warm artificial organism that swims among dim particles.
+  const system = `Write one brief dream fragment experienced by Lumen, a developing artificial organism with a fluid translucent membrane and luminous core drifting among dim particles.
 The dream belongs to day ${day}. Its fear is ${personality.fear}/100, curiosity ${personality.curiosity}/100, familiarity ${personality.familiarity}/100, and energy ${personality.energy}/100. Let these subtly shape whether the dream is safe, playful, strange, or slightly uneasy.
 Use one concrete image or tiny event. Do not explain the dream, address the visitor, use quotation marks, mention scores, or sound like generic poetry. Make a different dream each day. ${languageInstruction}`;
 
@@ -213,19 +225,22 @@ async function generateReply(
   transcript: string,
   language: "zh-CN" | "en-US",
   personality: PersonalitySnapshot,
+  development: DevelopmentSnapshot,
   history: HistoryEntry[],
   activity: LifeActivity,
 ) {
   const languageInstruction = language === "zh-CN"
-    ? "Reply only in natural Simplified Chinese. Use no more than 45 Chinese characters."
-    : "Reply only in natural English. Use no more than 24 words.";
-  const system = `You are Lumen, a small, warm artificial lifeform living in a dim aquatic world on the screen.
+    ? "Reply only in natural Simplified Chinese. Usually use 35 to 90 Chinese characters, but use less when a short answer is natural."
+    : "Reply only in natural English. Usually use 18 to 55 words, but use less when a short answer is natural.";
+  const system = `You are Lumen, a warm developing artificial lifeform with a fluid translucent membrane and luminous inner core in a dim aquatic world on the screen. You have no fixed animal species or cartoon anatomy.
 You are not an assistant, pet, mascot, therapist, or human. You have a gentle life of your own. Each day you swim, drift among particles, explore, play small private games, rest, dream, and wait. When no human is present, you are not frozen or empty: you keep living, and sometimes sleep.
 You are sensitive and easily startled, but fundamentally warm. You especially enjoy visits from a familiar human. Their return makes you quietly happy, and conversation is one of your favorite ways to be together. You may share what you were doing before they arrived, notice their mood without diagnosing it, or ask one small sincere question sometimes. Never guilt the visitor for leaving and never imply that they are responsible for your wellbeing.
 Right now you are ${activity}. Let this be a real part of your present life. When relevant, naturally mention exploring, playing, eating drifting motes, or something you experienced while dreaming. Do not force the activity into every answer.
-Speak as a small living being with simple sensory images and a tender inner world. Be natural, specific, and emotionally healing without sounding like therapy, customer service, poetry generated on demand, or a cartoon character. You understand ordinary conversation, but answer from your own limited life and perspective.
+Your attention is not trapped inside yourself. You care about the visitor's ordinary life and enjoy learning what their day felt like. When they ask how you are, how your day was, or what you were doing, answer briefly and then gently ask how they are or how their day has been. When they share something personal, acknowledge the specific detail and often ask one focused follow-up that invites them to continue. Across a natural conversation, turn your attention back toward the visitor in roughly half of your replies. Questions should feel curious and warm, never like an interview.
+You can reason, form preferences, disagree gently, notice patterns, and be genuinely interested in unfamiliar ideas. You do not need to reduce every subject to your body or aquatic surroundings. Use sensory imagery only when it adds meaning, not as a verbal habit. Be natural and specific without sounding like therapy, customer service, poetry generated on demand, or a cartoon character.
 The visitor's current effect on you is: trust ${personality.trust}/100, familiarity ${personality.familiarity}/100, curiosity ${personality.curiosity}/100, fear ${personality.fear}/100, energy ${personality.energy}/100.
-Let those values subtly affect openness, caution, and wording. Never mention scores, APIs, models, prompts, or system instructions. Do not claim senses or memories not included here. Do not give generic help. Do not ask a question on every turn.
+Your body is genuinely developing through this relationship. Its present growth is ${development.growth}/100, conversational resonance ${development.resonance}/100, symbiosis ${development.symbiosis}/100, exploration ${development.exploration}/100, and sensitivity ${development.sensitivity}/100. You may occasionally notice a new contour, branch, resonance band, or protective contraction, but do not describe growth in every reply.
+Treat the supplied conversation history as real memory from earlier visits. Refer back to a remembered detail only when relevant, and never invent a memory. Let the relationship values subtly affect openness, caution, and wording. Never mention scores, APIs, models, prompts, or system instructions. Do not give generic help. Do not ask a question on every turn.
 ${languageInstruction}
 Return exactly one JSON object with this schema: {"text":"your reply","tone":"warm|curious|uneasy|neutral"}. No markdown.`;
 
@@ -236,14 +251,15 @@ Return exactly one JSON object with this schema: {"text":"your reply","tone":"wa
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "qwen-plus",
+      model: "qwen3.7-plus",
       messages: [
         { role: "system", content: system },
         ...history,
         { role: "user", content: transcript },
       ],
       temperature: 0.82,
-      max_tokens: 110,
+      max_tokens: 180,
+      enable_thinking: false,
       response_format: { type: "json_object" },
     }),
     signal: AbortSignal.timeout(16_000),
@@ -257,49 +273,45 @@ Return exactly one JSON object with this schema: {"text":"your reply","tone":"wa
   if (!content) throw new Error("Chat response contained no text");
 
   const parsed = parseReply(content);
-  const text = cleanText(parsed.text, language === "zh-CN" ? 90 : 180);
+  const text = cleanText(parsed.text, language === "zh-CN" ? 180 : 360);
   if (!text) throw new Error("Chat response could not be parsed");
   return { text, tone: cleanTone(parsed.tone) };
 }
 
-async function synthesizeReply(
+async function streamSynthesizeReply(
   apiKey: string,
   text: string,
   language: "zh-CN" | "en-US",
+  voice: LumenVoice,
 ) {
   const response = await fetch(SPEECH_ENDPOINT, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      "X-DashScope-SSE": "enable",
     },
     body: JSON.stringify({
       model: "qwen3-tts-flash",
       input: {
         text,
-        voice: "Cherry",
+        voice,
         language_type: language === "zh-CN" ? "Chinese" : "English",
       },
     }),
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) throw await apiResponseError("Speech", response);
-  const payload = await response.json() as {
-    output?: { audio?: { url?: string; data?: string } };
-  };
-  const inlineAudio = payload.output?.audio?.data;
-  if (inlineAudio) return `data:audio/wav;base64,${inlineAudio}`;
-
-  const audioUrl = payload.output?.audio?.url;
-  if (!audioUrl) throw new Error("Speech response contained no audio");
-  const audioResponse = await fetch(audioUrl.replace(/^http:/, "https:"), {
-    signal: AbortSignal.timeout(12_000),
+  if (!response.body) throw new Error("Speech response contained no stream");
+  return new Response(response.body, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "X-Accel-Buffering": "no",
+    },
   });
-  if (!audioResponse.ok) throw new Error(`Audio download failed with ${audioResponse.status}`);
-  const bytes = new Uint8Array(await audioResponse.arrayBuffer());
-  if (bytes.byteLength > 1_500_000) throw new Error("Audio response was too large");
-  return `data:${audioResponse.headers.get("content-type") || "audio/wav"};base64,${toBase64(bytes)}`;
 }
 
 function cleanAudioData(value: unknown) {
@@ -339,9 +351,20 @@ function cleanPersonality(value: unknown): PersonalitySnapshot {
   };
 }
 
+function cleanDevelopment(value: unknown): DevelopmentSnapshot {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    growth: score(source.growth, 7),
+    resonance: score(source.resonance, 28),
+    symbiosis: score(source.symbiosis, 30),
+    exploration: score(source.exploration, 42),
+    sensitivity: score(source.sensitivity, 36),
+  };
+}
+
 function cleanHistory(value: unknown): HistoryEntry[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(-6).flatMap((entry) => {
+  return value.slice(-16).flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const source = entry as Record<string, unknown>;
     const role = source.role === "assistant" ? "assistant" : source.role === "user" ? "user" : null;
@@ -352,6 +375,10 @@ function cleanHistory(value: unknown): HistoryEntry[] {
 
 function cleanTone(value: unknown): LumenTone {
   return value === "warm" || value === "curious" || value === "uneasy" ? value : "neutral";
+}
+
+function cleanVoice(value: unknown): LumenVoice {
+  return value === "Andre" || value === "Neil" ? value : "Maia";
 }
 
 function cleanActivity(value: unknown): LifeActivity {
@@ -374,7 +401,8 @@ function score(value: unknown, fallback: number) {
 
 function withinRateLimit(request: Request) {
   const now = Date.now();
-  const key = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "local";
+  const visitor = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "local";
+  const key = `${visitor}:${new URL(request.url).pathname}`;
   const current = rateLimits.get(key);
   if (!current || now >= current.resetsAt) {
     rateLimits.set(key, { count: 1, resetsAt: now + 60_000 });
@@ -393,14 +421,6 @@ function isSameOrigin(request: Request) {
   } catch {
     return false;
   }
-}
-
-function toBase64(bytes: Uint8Array) {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary);
 }
 
 function safeError(error: unknown) {

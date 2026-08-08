@@ -63,7 +63,8 @@ button {
 .privacy,
 .hand-preview,
 .lumen-speech,
-.life-activity {
+.life-activity,
+.dream-journal {
   position: absolute;
   z-index: 2;
 }
@@ -163,6 +164,29 @@ button {
   border-radius: 50%;
   background: #8cebd1;
   box-shadow: 0 0 15px rgba(128, 239, 208, 0.72);
+}
+
+.help-button {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  margin-left: 3px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(174, 237, 220, 0.18);
+  border-radius: 50%;
+  color: rgba(216, 242, 235, 0.42);
+  background: rgba(8, 30, 32, 0.42);
+  cursor: pointer;
+  font-family: "Avenir Next", Avenir, sans-serif;
+  font-size: 9px;
+}
+
+.help-button:hover,
+.help-button:focus-visible {
+  color: rgba(231, 253, 247, 0.86);
+  border-color: rgba(174, 237, 220, 0.48);
+  outline: none;
 }
 
 .presence {
@@ -503,7 +527,8 @@ button {
   opacity: 0.35;
 }
 
-.microphone-select {
+.microphone-select,
+.lumen-voice-select {
   max-width: 152px;
   padding: 6px 20px 6px 7px;
   border: 1px solid rgba(166, 236, 216, 0.12);
@@ -517,19 +542,26 @@ button {
   text-overflow: ellipsis;
 }
 
-.microphone-select:hover:not(:disabled) {
+.microphone-select:hover:not(:disabled),
+.lumen-voice-select:hover:not(:disabled) {
   color: rgba(226, 249, 242, 0.78);
   border-color: rgba(172, 244, 224, 0.3);
 }
 
-.microphone-select:focus-visible {
+.microphone-select:focus-visible,
+.lumen-voice-select:focus-visible {
   outline: 1px solid rgba(169, 247, 225, 0.72);
   outline-offset: 3px;
 }
 
-.microphone-select:disabled {
+.microphone-select:disabled,
+.lumen-voice-select:disabled {
   cursor: default;
   opacity: 0.35;
+}
+
+.lumen-voice-select {
+  max-width: 112px;
 }
 
 .memory {
@@ -561,6 +593,75 @@ button {
   transition: width 600ms ease;
 }
 
+.dream-journal {
+  left: clamp(24px, 5vw, 72px);
+  bottom: clamp(54px, 7vw, 86px);
+  width: min(280px, 34vw);
+  color: rgba(211, 239, 232, 0.5);
+}
+
+.dream-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.dream-toggle i {
+  width: 22px;
+  height: 1px;
+  background: rgba(151, 241, 217, 0.32);
+  transition: width 280ms ease, background 280ms ease;
+}
+
+.dream-toggle:hover,
+.dream-toggle:focus-visible {
+  color: rgba(226, 249, 242, 0.82);
+  outline: none;
+}
+
+.dream-journal.is-open .dream-toggle i {
+  width: 42px;
+  background: rgba(151, 241, 217, 0.62);
+}
+
+.dream-entry {
+  overflow: hidden;
+  max-height: 0;
+  padding-right: 8px;
+  opacity: 0;
+  transform: translateY(5px);
+  transition: max-height 420ms ease, opacity 320ms ease, transform 420ms ease;
+}
+
+.dream-journal.is-open .dream-entry {
+  max-height: 180px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.dream-entry time {
+  color: rgba(184, 226, 215, 0.3);
+  font-size: 7px;
+  letter-spacing: 0.12em;
+}
+
+.dream-entry p {
+  margin: 8px 0 0;
+  color: rgba(226, 248, 241, 0.68);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.55;
+}
+
 .privacy {
   left: clamp(24px, 5vw, 72px);
   bottom: clamp(24px, 4vw, 48px);
@@ -568,6 +669,107 @@ button {
   color: rgba(210, 234, 229, 0.28);
   font-size: 9px;
   letter-spacing: 0.1em;
+}
+
+.guide-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgba(1, 7, 10, 0.74);
+  backdrop-filter: blur(18px);
+  animation: guide-arrival 520ms ease both;
+}
+
+.guide-card {
+  width: min(760px, 92vw);
+  padding: clamp(28px, 5vw, 54px);
+  border: 1px solid rgba(165, 236, 217, 0.2);
+  border-radius: 34px;
+  background:
+    radial-gradient(circle at 72% 12%, rgba(80, 178, 151, 0.12), transparent 32%),
+    rgba(4, 18, 23, 0.91);
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.52), inset 0 0 70px rgba(95, 211, 179, 0.035);
+}
+
+.guide-kicker {
+  margin: 0 0 12px;
+  color: rgba(161, 231, 212, 0.44);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.guide-card h1 {
+  margin: 0;
+  color: rgba(233, 253, 247, 0.94);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(32px, 5vw, 54px);
+  font-weight: 400;
+  letter-spacing: 0.025em;
+}
+
+.guide-intro {
+  max-width: 620px;
+  margin: 16px 0 30px;
+  color: rgba(217, 241, 234, 0.64);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(15px, 1.7vw, 19px);
+  line-height: 1.58;
+}
+
+.guide-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 22px;
+}
+
+.guide-grid article {
+  padding-top: 15px;
+  border-top: 1px solid rgba(166, 233, 215, 0.14);
+}
+
+.guide-grid span {
+  color: rgba(158, 230, 210, 0.48);
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.guide-grid p {
+  margin: 10px 0 0;
+  color: rgba(221, 244, 237, 0.65);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.guide-note {
+  margin: 26px 0 20px;
+  color: rgba(181, 226, 213, 0.4);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.guide-enter {
+  padding: 12px 18px;
+  border: 1px solid rgba(174, 240, 222, 0.3);
+  border-radius: 999px;
+  color: rgba(234, 253, 247, 0.86);
+  background: rgba(92, 195, 166, 0.1);
+  cursor: pointer;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.guide-enter:hover,
+.guide-enter:focus-visible {
+  border-color: rgba(174, 240, 222, 0.62);
+  background: rgba(92, 195, 166, 0.17);
+  outline: none;
 }
 
 @keyframes pulse {
@@ -595,6 +797,11 @@ button {
   50% { opacity: 0.78; transform: translate(4px, -3px); }
 }
 
+@keyframes guide-arrival {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @media (max-width: 620px) {
   .memory,
   .privacy {
@@ -611,12 +818,35 @@ button {
     width: 142px;
   }
 
+  .dream-journal {
+    top: 94px;
+    bottom: auto;
+    left: 18px;
+    width: min(210px, 54vw);
+  }
+
   .visit-controls {
     gap: 14px;
   }
 
   .voice-control {
     max-width: min(78vw, 330px);
+  }
+
+  .guide-backdrop {
+    overflow-y: auto;
+    place-items: start center;
+  }
+
+  .guide-card {
+    margin: auto 0;
+    padding: 28px 24px;
+    border-radius: 26px;
+  }
+
+  .guide-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
   }
 }
 
