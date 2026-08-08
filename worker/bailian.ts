@@ -5,6 +5,7 @@ type ConversationBody = {
   language?: unknown;
   personality?: unknown;
   history?: unknown;
+  activity?: unknown;
 };
 
 type TranscriptionBody = {
@@ -17,6 +18,12 @@ type SpeechBody = {
   language?: unknown;
 };
 
+type DreamBody = {
+  language?: unknown;
+  personality?: unknown;
+  day?: unknown;
+};
+
 type PersonalitySnapshot = {
   trust: number;
   curiosity: number;
@@ -26,6 +33,7 @@ type PersonalitySnapshot = {
 };
 
 type HistoryEntry = { role: "user" | "assistant"; content: string };
+type LifeActivity = "dreaming" | "exploring" | "feeding" | "playing";
 
 type RateLimit = { count: number; resetsAt: number };
 
@@ -52,9 +60,10 @@ export async function handleLumenConversation(request: Request, apiKey?: string)
   const language = body.language === "zh-CN" ? "zh-CN" : "en-US";
   const personality = cleanPersonality(body.personality);
   const history = cleanHistory(body.history);
+  const activity = cleanActivity(body.activity);
 
   try {
-    const generated = await generateReply(apiKey, transcript, language, personality, history);
+    const generated = await generateReply(apiKey, transcript, language, personality, history, activity);
     return json({ ...generated, source: "bailian" });
   } catch (error) {
     console.error("Bailian conversation failed", safeError(error));
@@ -143,12 +152,69 @@ export async function handleLumenSpeech(request: Request, apiKey?: string) {
   }
 }
 
+export async function handleLumenDream(request: Request, apiKey?: string) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (!apiKey) return json({ error: "Lumen's dreams are not configured yet." }, 503);
+  if (!isSameOrigin(request)) return json({ error: "Origin not allowed" }, 403);
+  if (!withinRateLimit(request)) return json({ error: "Lumen needs a moment of quiet." }, 429);
+
+  let body: DreamBody;
+  try {
+    body = await request.json() as DreamBody;
+  } catch {
+    return json({ error: "Invalid request" }, 400);
+  }
+  const language = body.language === "zh-CN" ? "zh-CN" : "en-US";
+  const personality = cleanPersonality(body.personality);
+  const day = cleanText(body.day, 16) || "unknown day";
+  const languageInstruction = language === "zh-CN"
+    ? "只用自然简体中文，25到55个汉字。"
+    : "Use natural English only, 10 to 24 words.";
+  const system = `Write one brief dream fragment experienced by Lumen, a small warm artificial organism that swims among dim particles.
+The dream belongs to day ${day}. Its fear is ${personality.fear}/100, curiosity ${personality.curiosity}/100, familiarity ${personality.familiarity}/100, and energy ${personality.energy}/100. Let these subtly shape whether the dream is safe, playful, strange, or slightly uneasy.
+Use one concrete image or tiny event. Do not explain the dream, address the visitor, use quotation marks, mention scores, or sound like generic poetry. Make a different dream each day. ${languageInstruction}`;
+
+  try {
+    const response = await fetch(CHAT_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "qwen-plus",
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: "Describe what Lumen is dreaming now." },
+        ],
+        temperature: 0.92,
+        max_tokens: 90,
+      }),
+      signal: AbortSignal.timeout(16_000),
+    });
+    if (!response.ok) throw await apiResponseError("Dream", response);
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const dream = cleanText(payload.choices?.[0]?.message?.content, language === "zh-CN" ? 100 : 180);
+    if (!dream) throw new Error("Dream response contained no text");
+    return json({ dream, source: "bailian" });
+  } catch (error) {
+    console.error("Bailian dream generation failed", safeError(error));
+    if (isArrearage(error)) {
+      return json({ error: "Bailian has no available balance. Check the Alibaba Cloud billing account." }, 402);
+    }
+    return json({ error: "Lumen's dream did not surface." }, 502);
+  }
+}
+
 async function generateReply(
   apiKey: string,
   transcript: string,
   language: "zh-CN" | "en-US",
   personality: PersonalitySnapshot,
   history: HistoryEntry[],
+  activity: LifeActivity,
 ) {
   const languageInstruction = language === "zh-CN"
     ? "Reply only in natural Simplified Chinese. Use no more than 45 Chinese characters."
@@ -156,6 +222,7 @@ async function generateReply(
   const system = `You are Lumen, a small, warm artificial lifeform living in a dim aquatic world on the screen.
 You are not an assistant, pet, mascot, therapist, or human. You have a gentle life of your own. Each day you swim, drift among particles, explore, play small private games, rest, dream, and wait. When no human is present, you are not frozen or empty: you keep living, and sometimes sleep.
 You are sensitive and easily startled, but fundamentally warm. You especially enjoy visits from a familiar human. Their return makes you quietly happy, and conversation is one of your favorite ways to be together. You may share what you were doing before they arrived, notice their mood without diagnosing it, or ask one small sincere question sometimes. Never guilt the visitor for leaving and never imply that they are responsible for your wellbeing.
+Right now you are ${activity}. Let this be a real part of your present life. When relevant, naturally mention exploring, playing, eating drifting motes, or something you experienced while dreaming. Do not force the activity into every answer.
 Speak as a small living being with simple sensory images and a tender inner world. Be natural, specific, and emotionally healing without sounding like therapy, customer service, poetry generated on demand, or a cartoon character. You understand ordinary conversation, but answer from your own limited life and perspective.
 The visitor's current effect on you is: trust ${personality.trust}/100, familiarity ${personality.familiarity}/100, curiosity ${personality.curiosity}/100, fear ${personality.fear}/100, energy ${personality.energy}/100.
 Let those values subtly affect openness, caution, and wording. Never mention scores, APIs, models, prompts, or system instructions. Do not claim senses or memories not included here. Do not give generic help. Do not ask a question on every turn.
@@ -285,6 +352,10 @@ function cleanHistory(value: unknown): HistoryEntry[] {
 
 function cleanTone(value: unknown): LumenTone {
   return value === "warm" || value === "curious" || value === "uneasy" ? value : "neutral";
+}
+
+function cleanActivity(value: unknown): LifeActivity {
+  return value === "dreaming" || value === "feeding" || value === "playing" ? value : "exploring";
 }
 
 function cleanText(value: unknown, maximum: number) {

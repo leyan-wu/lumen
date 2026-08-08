@@ -13,7 +13,7 @@ npm run dev
 
 Open the local URL printed in the terminal (normally `http://localhost:3000`), choose **Let Lumen see you**, and allow camera access. Webcam access works on `localhost`; if testing from another device, serve the page over HTTPS.
 
-Once the visit begins, choose the microphone beside **speak softly**. Lumen prefers a detected MacBook microphone by default and remembers the selection on this device. Press **speak softly**, talk for up to 14 seconds, then press **finish speaking**. The short audio clip is sent to Alibaba Cloud Bailian for transcription; video remains local.
+Once the visit begins, choose the microphone beside **begin conversation**. Lumen prefers a detected MacBook microphone by default and remembers the selection on this device. Press **begin conversation** once, then speak naturally. Local voice-activity detection notices when a turn starts and ends; after Lumen replies aloud, listening resumes automatically. Press **end conversation** only when the conversation is over. Short audio turns are sent to Alibaba Cloud Bailian for transcription; video remains local.
 
 To verify a production build:
 
@@ -40,9 +40,11 @@ When alone, Lumen chooses its own exploration points, wanders through the field,
 
 After some familiarity has formed, Lumen may initiate a synchronization ritual. Concentric pulses and orbiting motes are an invitation to keep the palm nearby and move gently. Sustained calm alignment completes the ritual, increasing trust and familiarity; sudden movement or disappearance dissolves it. On-screen messages are queued with minimum reading times so rapid emotional changes do not overwrite one another.
 
-Lumen has a separate first-person text voice. Operational guidance remains at the bottom of the screen, while sparse thoughts appear near the organism and follow its movement. Its language changes with familiarity and meaningful events: it comments on first encounters, touch, fear, synchronization, recognition, and—occasionally—the experience of waiting alone. Speech is queued, deduplicated, and deliberately infrequent so it feels like an emerging interior life rather than interface narration.
+Lumen has a separate first-person text voice. The visitor's latest transcript is explicitly labeled **you**, while Lumen's answer is labeled **lumen** and follows the organism. Earlier event narration for touch, fear, synchronization, and waiting is intentionally suppressed during this voice-focused iteration so it cannot be mistaken for a conversational reply.
 
-Voice conversation uses a three-stage path: Bailian Qwen-ASR transcribes the selected microphone recording, Qwen generates Lumen's short reply, and a fixed Qwen-TTS model and system voice speak it. The text reply appears before audio synthesis finishes, so Lumen responds visibly without waiting for the voice file. Keeping one model, one voice, and no per-turn voice directions gives Lumen a consistent audible identity.
+Voice conversation uses a three-stage path: Bailian Qwen-ASR transcribes each detected turn, Qwen generates Lumen's short reply, and a fixed Qwen-TTS model and system voice speak it. The browser audio context is unlocked by the **begin conversation** gesture, allowing the generated voice to play after asynchronous synthesis. Lumen pauses voice detection while speaking so it does not answer itself.
+
+Lumen also follows a local daily rhythm: dreaming, exploring, feeding on drifting motes, and playing. These states alter motion and particle behavior and are included in the conversation context, so Lumen can naturally mention what it is doing. During sleeping periods it becomes nearly still and shows a sleep marker. One short AI-generated dream is cached per local day and appears as text while it sleeps.
 
 ## Architecture
 

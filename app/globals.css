@@ -62,7 +62,8 @@ button {
 .memory,
 .privacy,
 .hand-preview,
-.lumen-speech {
+.lumen-speech,
+.life-activity {
   position: absolute;
   z-index: 2;
 }
@@ -91,6 +92,22 @@ button {
   animation: lumen-thought 620ms ease both;
 }
 
+.lumen-speech::before {
+  display: block;
+  margin-bottom: 8px;
+  color: rgba(169, 236, 218, 0.42);
+  content: "lumen";
+  font-family: "Avenir Next", Avenir, sans-serif;
+  font-size: 8px;
+  font-style: normal;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.lumen-speech.is-dream::before {
+  content: "dream";
+}
+
 .lumen-speech::after {
   display: block;
   width: 20px;
@@ -98,6 +115,34 @@ button {
   margin: 11px auto 0;
   content: "";
   background: linear-gradient(90deg, transparent, rgba(159, 241, 216, 0.42), transparent);
+}
+
+.life-activity {
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  color: rgba(169, 235, 216, 0.34);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: opacity 600ms ease;
+}
+
+.life-activity > span {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+}
+
+.life-activity small {
+  font-size: 7px;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+}
+
+.life-activity.is-dreaming > span {
+  animation: dream-drift 2.8s ease-in-out infinite;
 }
 
 .brand {
@@ -257,21 +302,46 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: min(90vw, 420px);
+  width: min(92vw, 560px);
   transform: translateX(-50%);
   text-align: center;
 }
 
 .message {
-  min-height: 22px;
-  margin: 0 0 18px;
-  color: rgba(224, 244, 238, 0.64);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: clamp(14px, 1.5vw, 17px);
-  font-style: italic;
-  letter-spacing: 0.02em;
+  min-height: 14px;
+  margin: 0 0 8px;
+  color: rgba(205, 237, 229, 0.36);
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
   transition: color 300ms ease;
   animation: message-arrival 420ms ease both;
+}
+
+.conversation-transcript {
+  min-height: 24px;
+  max-width: min(82vw, 480px);
+  margin: 0 0 14px;
+  color: rgba(224, 247, 240, 0.72);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(13px, 1.25vw, 16px);
+  line-height: 1.45;
+  opacity: 0;
+  transition: opacity 320ms ease;
+}
+
+.conversation-transcript.is-visible {
+  opacity: 1;
+}
+
+.conversation-transcript span {
+  margin-right: 9px;
+  color: rgba(159, 226, 207, 0.38);
+  font-family: "Avenir Next", Avenir, sans-serif;
+  font-size: 7px;
+  font-style: normal;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 .meet-button {
@@ -344,6 +414,14 @@ button {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.voice-status {
+  min-width: 92px;
+  color: rgba(205, 237, 229, 0.34);
+  font-size: 7px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .voice-button {
@@ -510,6 +588,11 @@ button {
 @keyframes listening {
   0% { box-shadow: 0 0 0 0 rgba(145, 243, 214, 0.55); }
   70%, 100% { box-shadow: 0 0 0 9px rgba(145, 243, 214, 0); }
+}
+
+@keyframes dream-drift {
+  0%, 100% { opacity: 0.35; transform: translate(0, 2px); }
+  50% { opacity: 0.78; transform: translate(4px, -3px); }
 }
 
 @media (max-width: 620px) {

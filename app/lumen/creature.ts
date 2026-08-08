@@ -1,4 +1,4 @@
-import type { HandSnapshot, Mood, Personality, Vec2 } from "./types";
+import type { HandSnapshot, LifeActivity, Mood, Personality, Vec2 } from "./types";
 import type { VoiceTone } from "./conversation";
 
 export type CreatureEvent =
@@ -16,6 +16,7 @@ type RitualPhase = "dormant" | "inviting" | "synchronizing" | "success" | "coold
 export class Creature {
   position: Vec2 = { x: 0, y: 0 };
   mood: Mood = "idle";
+  activity: LifeActivity = "exploring";
 
   private velocity: Vec2 = { x: 0, y: 0 };
   private target: Vec2 = { x: 0, y: 0 };
@@ -42,6 +43,10 @@ export class Creature {
   private heardUntil = 0;
   private heardTone: VoiceTone = "neutral";
   private voicePulse = 0;
+
+  setActivity(activity: LifeActivity) {
+    this.activity = activity;
+  }
 
   hear(tone: VoiceTone, now: number) {
     this.heardTone = tone;
@@ -170,19 +175,24 @@ export class Creature {
       curiosityTarget = 0.2 + personality.curiosity / 180;
 
       if (
+        this.activity !== "dreaming" &&
         aloneFor > 1450 &&
         (now >= this.nextWanderAt || distanceBetween(this.target, this.position) < radius * 0.3)
       ) {
         const phase = now * 0.00031 + personality.curiosity * 0.071;
-        const wander = 0.16 + personality.curiosity / 330;
+        const activityRange = this.activity === "playing" ? 1.22 : this.activity === "feeding" ? 0.72 : 1;
+        const wander = (0.16 + personality.curiosity / 330) * activityRange;
         this.explorationPoint = {
           x: width * (0.5 + Math.sin(phase * 1.7) * wander),
           y: height * (0.49 + Math.cos(phase * 1.13 + 1.4) * wander * 0.58),
         };
-        this.nextWanderAt = now + 6500 - personality.curiosity * 34 + Math.sin(phase) * 900;
+        const activityPace = this.activity === "playing" ? 0.56 : this.activity === "feeding" ? 1.28 : 1;
+        this.nextWanderAt = now + (6500 - personality.curiosity * 34 + Math.sin(phase) * 900) * activityPace;
       }
       // Briefly hold the last place of attention, then resume autonomous life.
-      this.target = aloneFor <= 1450 ? { ...this.position } : { ...this.explorationPoint };
+      this.target = this.activity === "dreaming" || aloneFor <= 1450
+        ? { ...this.position }
+        : { ...this.explorationPoint };
     }
 
     if (now < this.heardUntil && event !== "touch" && event !== "scare") {
@@ -232,7 +242,8 @@ export class Creature {
     this.target.x = clamp(this.target.x, radius * 1.2, width - radius * 1.2);
     this.target.y = clamp(this.target.y, radius * 1.2, height - radius * 1.2);
 
-    const energy = 0.65 + personality.energy / 180;
+    const activityEnergy = this.activity === "dreaming" ? 0.18 : this.activity === "playing" ? 1.18 : 1;
+    const energy = (0.65 + personality.energy / 180) * activityEnergy;
     const familiarResponse = 0.62 + personality.familiarity / 210;
     const idleResponse = 0.45 + personality.curiosity / 250;
     const stiffness = (frightened ? 13 : hand.present ? 5.4 * familiarResponse : 3.8 * idleResponse) * energy;
@@ -360,10 +371,11 @@ export class Creature {
     const curiosity = clamp(personality.curiosity / 100 * 0.64 + this.affect.curiosity * 0.48, 0, 1);
     this.visual = { fear, openness, curiosity };
     const radius = this.radius(width, height) * (0.92 + openness * 0.15) * (1 - fear * 0.17);
-    const breathRate = 0.72 + energy * 0.22;
+    const breathRate = this.activity === "dreaming" ? 0.34 : 0.72 + energy * 0.22;
     const breath = (Math.sin(time * breathRate * Math.PI * 2) + 1) * 0.5;
     const breathingScale = 0.968 + breath * (0.04 + energy * 0.012 + openness * 0.018) - fear * 0.018;
-    const floatY = Math.sin(time * (0.42 + curiosity * 0.12)) * (4 + energy * 2 + curiosity * 4);
+    const activityFloat = this.activity === "dreaming" ? 0.24 : this.activity === "playing" ? 1.28 : 1;
+    const floatY = Math.sin(time * (0.42 + curiosity * 0.12)) * (4 + energy * 2 + curiosity * 4) * activityFloat;
     const center = { x: this.position.x, y: this.position.y + floatY };
     const movement = Math.hypot(this.velocity.x, this.velocity.y);
     const movementAngle = Math.atan2(this.velocity.y, this.velocity.x);
@@ -652,14 +664,15 @@ export class Creature {
     context.globalCompositeOperation = "screen";
     for (let index = 0; index < 36; index += 1) {
       const cycle = (time * (0.026 + this.visual.curiosity * 0.025 + (index % 5) * 0.006) + index * 0.137) % 1;
-      const orbit = radius * (1.05 + cycle * 1.1);
+      const feedingCycle = this.activity === "feeding" ? 1 - cycle : cycle;
+      const orbit = radius * (this.activity === "feeding" ? 0.32 + feedingCycle * 1.85 : 1.05 + cycle * 1.1);
       const angle = index * 2.399 + time * (index % 2 ? 0.11 : -0.08);
       const attraction = hand.present ? (1 - cycle) * 0.12 : (1 - cycle) * 0.025 * this.visual.curiosity;
       const targetX = hand.present ? hand.center.x * context.canvas.clientWidth : this.explorationPoint.x;
       const targetY = hand.present ? hand.center.y * context.canvas.clientHeight : this.explorationPoint.y;
       const x = center.x + Math.cos(angle) * orbit + (targetX - center.x) * attraction;
       const y = center.y + Math.sin(angle) * orbit * 0.74 + (targetY - center.y) * attraction;
-      const alpha = Math.sin(cycle * Math.PI) * (0.06 + energy * 0.1 + this.visual.curiosity * 0.08);
+      const alpha = Math.sin(cycle * Math.PI) * (0.06 + energy * 0.1 + this.visual.curiosity * 0.08) * (this.activity === "dreaming" ? 0.42 : 1);
       context.globalAlpha = alpha;
       context.fillStyle = index % 4 === 0 ? "#d8f5a9" : "#8cebd1";
       context.beginPath();

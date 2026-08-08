@@ -1,7 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { handleLumenConversation, handleLumenSpeech, handleLumenTranscription } from "./bailian";
+import { handleLumenConversation, handleLumenDream, handleLumenSpeech, handleLumenTranscription } from "./bailian";
 
 interface Env {
   ASSETS: Fetcher;
@@ -52,6 +52,10 @@ const worker = {
 
     if (url.pathname === "/api/lumen/speak") {
       return handleLumenSpeech(request, env.DASHSCOPE_API_KEY);
+    }
+
+    if (url.pathname === "/api/lumen/dream") {
+      return handleLumenDream(request, env.DASHSCOPE_API_KEY);
     }
 
     return handler.fetch(request, env, ctx);

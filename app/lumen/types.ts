@@ -1,6 +1,7 @@
 export type Vec2 = { x: number; y: number };
 
 export type Mood = "idle" | "newborn" | "curious" | "happy" | "scared" | "lonely";
+export type LifeActivity = "dreaming" | "exploring" | "feeding" | "playing";
 
 export type Personality = {
   trust: number;

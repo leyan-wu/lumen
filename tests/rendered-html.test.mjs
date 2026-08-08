@@ -55,12 +55,16 @@ test("bundles hand tracking, voice conversation, and hydration-safe memory", asy
   assert.doesNotMatch(experience, /useState<Personality>\(\(\) => loadPersonality\(\)\)/);
   assert.match(experience, /MediaRecorder/);
   assert.match(experience, /enumerateDevices/);
-  assert.match(experience, /speak softly/);
+  assert.match(experience, /begin conversation/);
+  assert.match(experience, /VOICE_START_LEVEL/);
+  assert.match(experience, /AudioContext/);
   assert.match(experience, /\/api\/lumen\/transcribe/);
   assert.match(experience, /\/api\/lumen\/converse/);
   assert.match(experience, /\/api\/lumen\/speak/);
+  assert.match(experience, /\/api\/lumen\/dream/);
   assert.match(conversation, /createConversationReply/);
   assert.match(bailian, /;codecs=/);
+  assert.match(bailian, /handleLumenDream/);
   assert.ok(model.size > 1_000_000);
 });
 
