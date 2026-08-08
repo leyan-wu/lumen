@@ -6,6 +6,7 @@ import { HandTracker } from "./lumen/hand-tracker";
 import {
   createConversationReply,
   type ConversationReply,
+  type VoiceTone,
 } from "./lumen/conversation";
 import {
   DEFAULT_PERSONALITY,
@@ -45,6 +46,12 @@ type BrowserSpeechRecognition = {
 };
 
 type SpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+type ConversationHistoryEntry = { role: "user" | "assistant"; content: string };
+type BailianConversationResponse = {
+  text?: string;
+  tone?: VoiceTone;
+  audio?: string | null;
+};
 
 declare global {
   interface Window {
@@ -79,6 +86,8 @@ export default function LumenExperience() {
   const trackerRef = useRef<HandTracker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const conversationHistoryRef = useRef<ConversationHistoryEntry[]>([]);
   const handRef = useRef<HandSnapshot>(EMPTY_HAND);
   const cameraStateRef = useRef<CameraState>("waiting");
   const [personality, setPersonality] = useState<Personality>(DEFAULT_PERSONALITY);
@@ -319,26 +328,61 @@ export default function LumenExperience() {
 
   useEffect(() => () => {
     recognitionRef.current?.abort();
+    audioRef.current?.pause();
+    window.speechSynthesis?.cancel();
     trackerRef.current?.close();
     streamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
 
-  const handleVoiceTranscript = useCallback((transcript: string) => {
+  const handleVoiceTranscript = useCallback(async (transcript: string) => {
     const cleanTranscript = transcript.trim();
     if (!cleanTranscript) return;
 
     setVoiceState("processing");
-    const response = createConversationReply(
+    const fallback = createConversationReply(
       cleanTranscript,
       personalityRef.current,
       personalityRef.current.interactionCount,
     );
+    announce(`You: “${cleanTranscript}”`, Math.max(4200, cleanTranscript.length * 90), true);
+    let response: ConversationReply = fallback;
+    let audio: string | null = null;
+
+    try {
+      const apiResponse = await fetch("/api/lumen/converse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript: cleanTranscript,
+          language: voiceLanguage,
+          personality: personalityRef.current,
+          history: conversationHistoryRef.current,
+        }),
+      });
+      if (!apiResponse.ok) throw new Error("Bailian response unavailable");
+      const result = await apiResponse.json() as BailianConversationResponse;
+      if (!result.text?.trim()) throw new Error("Bailian returned no reply");
+      response = {
+        ...fallback,
+        text: result.text.trim(),
+        tone: isVoiceTone(result.tone) ? result.tone : fallback.tone,
+      };
+      audio = result.audio ?? null;
+    } catch (error) {
+      console.warn("Lumen used its local voice memory", error);
+    }
+
+    conversationHistoryRef.current = [
+      ...conversationHistoryRef.current,
+      { role: "user", content: cleanTranscript },
+      { role: "assistant", content: response.text },
+    ].slice(-6);
     creatureRef.current.hear(response.tone, performance.now());
     rememberVoice(response);
-    announce(`You: “${cleanTranscript}”`, Math.max(4200, cleanTranscript.length * 90), true);
     speak(response.text, readingDuration(response.text), true);
+    playLumenVoice(audioRef, audio, response.text, voiceLanguage);
     setVoiceState("idle");
-  }, [announce, rememberVoice, speak]);
+  }, [announce, rememberVoice, speak, voiceLanguage]);
 
   const toggleVoice = useCallback(() => {
     if (voiceState === "listening") {
@@ -447,6 +491,9 @@ export default function LumenExperience() {
   const stopCamera = () => {
     recognitionRef.current?.abort();
     recognitionRef.current = null;
+    audioRef.current?.pause();
+    audioRef.current = null;
+    window.speechSynthesis?.cancel();
     setVoiceState("idle");
     trackerRef.current?.close();
     trackerRef.current = null;
@@ -546,7 +593,7 @@ export default function LumenExperience() {
         <span className="memory-line"><i style={{ width: `${personality.trust}%` }} /></span>
       </aside>
 
-      <p className="privacy">Camera stays on this device · voice recognition is handled by your browser</p>
+      <p className="privacy">Camera stays on this device · speech transcripts go to Bailian · AI-generated voice</p>
     </main>
   );
 }
@@ -557,6 +604,41 @@ function clamp(value: number) {
 
 function readingDuration(text: string) {
   return Math.max(5000, Math.min(8200, 4100 + text.length * 75));
+}
+
+function isVoiceTone(value: unknown): value is VoiceTone {
+  return value === "warm" || value === "curious" || value === "uneasy" || value === "neutral";
+}
+
+function playLumenVoice(
+  audioRef: React.MutableRefObject<HTMLAudioElement | null>,
+  audioData: string | null,
+  text: string,
+  language: VoiceLanguage,
+) {
+  audioRef.current?.pause();
+  window.speechSynthesis?.cancel();
+
+  if (audioData) {
+    const audio = new Audio(audioData);
+    audio.volume = 0.78;
+    audioRef.current = audio;
+    void audio.play().catch(() => speakWithBrowser(text, language));
+    return;
+  }
+  speakWithBrowser(text, language);
+}
+
+function speakWithBrowser(text: string, language: VoiceLanguage) {
+  if (!("speechSynthesis" in window)) return;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = language;
+  utterance.rate = 0.78;
+  utterance.pitch = 0.86;
+  utterance.volume = 0.72;
+  const voices = window.speechSynthesis.getVoices();
+  utterance.voice = voices.find((voice) => voice.lang.toLocaleLowerCase().startsWith(language.slice(0, 2))) ?? null;
+  window.speechSynthesis.speak(utterance);
 }
 
 type MessageEntry = { text: string; duration: number };

@@ -32,6 +32,7 @@ test("server-renders the Lumen experience", async () => {
   assert.match(html, /<title>Lumen — a digital lifeform<\/title>/i);
   assert.match(html, /Let Lumen see you/);
   assert.match(html, /Camera stays on this device/);
+  assert.match(html, /speech transcripts go to Bailian/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
@@ -53,6 +54,27 @@ test("bundles hand tracking, voice conversation, and hydration-safe memory", asy
   assert.doesNotMatch(experience, /useState<Personality>\(\(\) => loadPersonality\(\)\)/);
   assert.match(experience, /webkitSpeechRecognition/);
   assert.match(experience, /speak softly/);
+  assert.match(experience, /\/api\/lumen\/converse/);
   assert.match(conversation, /createConversationReply/);
   assert.ok(model.size > 1_000_000);
+});
+
+test("keeps the Bailian credential server-side", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("api-test", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("http://localhost/api/lumen/converse", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ transcript: "你好", language: "zh-CN" }),
+    }),
+    {
+      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+
+  assert.equal(response.status, 503);
+  assert.doesNotMatch(await response.text(), /sk-/i);
 });
