@@ -13,6 +13,8 @@ npm run dev
 
 Open the local URL printed in the terminal (normally `http://localhost:3000`), choose **Let Lumen see you**, and allow camera access. Webcam access works on `localhost`; if testing from another device, serve the page over HTTPS.
 
+Once the visit begins, choose the microphone beside **speak softly**. Lumen prefers a detected MacBook microphone by default and remembers the selection on this device. Press **speak softly**, talk for up to 14 seconds, then press **finish speaking**. The short audio clip is sent to Alibaba Cloud Bailian for transcription; video remains local.
+
 To verify a production build:
 
 ```bash
@@ -40,11 +42,13 @@ After some familiarity has formed, Lumen may initiate a synchronization ritual. 
 
 Lumen has a separate first-person text voice. Operational guidance remains at the bottom of the screen, while sparse thoughts appear near the organism and follow its movement. Its language changes with familiarity and meaningful events: it comments on first encounters, touch, fear, synchronization, recognition, and—occasionally—the experience of waiting alone. Speech is queued, deduplicated, and deliberately infrequent so it feels like an emerging interior life rather than interface narration.
 
+Voice conversation uses a three-stage path: Bailian Qwen-ASR transcribes the selected microphone recording, Qwen generates Lumen's short reply, and a fixed Qwen-TTS model and system voice speak it. The text reply appears before audio synthesis finishes, so Lumen responds visibly without waiting for the voice file. Keeping one model, one voice, and no per-turn voice directions gives Lumen a consistent audible identity.
+
 ## Architecture
 
 The prototype intentionally keeps the runtime small:
 
-- `app/LumenExperience.tsx` owns camera permission, the animation loop, interaction updates, and minimal UI.
+- `app/LumenExperience.tsx` owns camera and microphone selection, short audio recording, the animation loop, interaction updates, and minimal UI.
 - `app/lumen/hand-tracker.ts` wraps MediaPipe Hand Landmarker and converts landmarks into mirrored fingertip position, palm position, and smoothed movement speed.
 - `app/lumen/creature.ts` contains proximity detection, spring movement, mood transitions, and the procedural organism renderer. The organism is built from fluid membrane paths, a pulsing nucleus, orbiting organelles, filaments, and particle fields—there are no image assets or character sprites.
 - `app/lumen/types.ts` defines shared state and handles browser memory.
@@ -53,7 +57,7 @@ MediaPipe's WASM runtime and hand model are bundled under `public/mediapipe`, so
 
 ## Privacy
 
-Video frames stay in the page and are processed locally. They are not recorded, uploaded, or stored. Only the numeric personality state is saved in the current browser.
+Video frames stay in the page and are processed locally. They are not recorded, uploaded, or stored. Short microphone recordings are sent to Bailian for transcription and are not saved by Lumen. Only the numeric personality state and preferred microphone ID are saved in the current browser.
 
 ## Tuning
 

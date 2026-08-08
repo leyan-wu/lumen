@@ -32,7 +32,7 @@ test("server-renders the Lumen experience", async () => {
   assert.match(html, /<title>Lumen — a digital lifeform<\/title>/i);
   assert.match(html, /Let Lumen see you/);
   assert.match(html, /Camera stays on this device/);
-  assert.match(html, /speech transcripts go to Bailian/);
+  assert.match(html, /short voice clips go to Bailian/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
@@ -52,9 +52,12 @@ test("bundles hand tracking, voice conversation, and hydration-safe memory", asy
   assert.match(types, /lumen-memory-v1/);
   assert.match(experience, /useState<Personality>\(DEFAULT_PERSONALITY\)/);
   assert.doesNotMatch(experience, /useState<Personality>\(\(\) => loadPersonality\(\)\)/);
-  assert.match(experience, /webkitSpeechRecognition/);
+  assert.match(experience, /MediaRecorder/);
+  assert.match(experience, /enumerateDevices/);
   assert.match(experience, /speak softly/);
+  assert.match(experience, /\/api\/lumen\/transcribe/);
   assert.match(experience, /\/api\/lumen\/converse/);
+  assert.match(experience, /\/api\/lumen\/speak/);
   assert.match(conversation, /createConversationReply/);
   assert.ok(model.size > 1_000_000);
 });

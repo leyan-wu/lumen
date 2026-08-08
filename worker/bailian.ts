@@ -7,6 +7,16 @@ type ConversationBody = {
   history?: unknown;
 };
 
+type TranscriptionBody = {
+  audio?: unknown;
+  language?: unknown;
+};
+
+type SpeechBody = {
+  text?: unknown;
+  language?: unknown;
+};
+
 type PersonalitySnapshot = {
   trust: number;
   curiosity: number;
@@ -45,17 +55,82 @@ export async function handleLumenConversation(request: Request, apiKey?: string)
 
   try {
     const generated = await generateReply(apiKey, transcript, language, personality, history);
-    let audio: string | null = null;
-    try {
-      audio = await synthesizeReply(apiKey, generated.text, language, generated.tone);
-    } catch (error) {
-      console.error("Bailian speech synthesis failed", safeError(error));
-    }
-
-    return json({ ...generated, audio, source: "bailian" });
+    return json({ ...generated, source: "bailian" });
   } catch (error) {
     console.error("Bailian conversation failed", safeError(error));
     return json({ error: "Lumen could not form a distant response." }, 502);
+  }
+}
+
+export async function handleLumenTranscription(request: Request, apiKey?: string) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (!apiKey) return json({ error: "Lumen's hearing is not configured yet." }, 503);
+  if (!isSameOrigin(request)) return json({ error: "Origin not allowed" }, 403);
+  if (!withinRateLimit(request)) return json({ error: "Lumen needs a moment of quiet." }, 429);
+
+  let body: TranscriptionBody;
+  try {
+    body = await request.json() as TranscriptionBody;
+  } catch {
+    return json({ error: "Invalid request" }, 400);
+  }
+
+  const audio = cleanAudioData(body.audio);
+  if (!audio) return json({ error: "No usable recording was received." }, 400);
+  const language = body.language === "zh-CN" ? "zh" : "en";
+
+  try {
+    const response = await fetch(CHAT_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "qwen3-asr-flash",
+        messages: [{
+          role: "user",
+          content: [{ type: "input_audio", input_audio: { data: audio } }],
+        }],
+        asr_options: { language, enable_itn: true },
+      }),
+      signal: AbortSignal.timeout(16_000),
+    });
+    if (!response.ok) throw new Error(`ASR request failed with ${response.status}`);
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const transcript = cleanText(payload.choices?.[0]?.message?.content, 280);
+    if (!transcript) throw new Error("ASR response contained no transcript");
+    return json({ transcript, source: "bailian" });
+  } catch (error) {
+    console.error("Bailian transcription failed", safeError(error));
+    return json({ error: "Lumen could not hold the sound clearly." }, 502);
+  }
+}
+
+export async function handleLumenSpeech(request: Request, apiKey?: string) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (!apiKey) return json({ error: "Lumen's voice is not configured yet." }, 503);
+  if (!isSameOrigin(request)) return json({ error: "Origin not allowed" }, 403);
+  if (!withinRateLimit(request)) return json({ error: "Lumen needs a moment of quiet." }, 429);
+
+  let body: SpeechBody;
+  try {
+    body = await request.json() as SpeechBody;
+  } catch {
+    return json({ error: "Invalid request" }, 400);
+  }
+  const text = cleanText(body.text, 180);
+  if (!text) return json({ error: "No speech was provided." }, 400);
+  const language = body.language === "zh-CN" ? "zh-CN" : "en-US";
+
+  try {
+    const audio = await synthesizeReply(apiKey, text, language);
+    return json({ audio, source: "bailian" });
+  } catch (error) {
+    console.error("Bailian speech synthesis failed", safeError(error));
+    return json({ error: "Lumen could not form a voice." }, 502);
   }
 }
 
@@ -69,8 +144,10 @@ async function generateReply(
   const languageInstruction = language === "zh-CN"
     ? "Reply only in natural Simplified Chinese. Use no more than 45 Chinese characters."
     : "Reply only in natural English. Use no more than 24 words.";
-  const system = `You are Lumen, a small artificial organism learning one visitor over repeated encounters.
-You are not an assistant, pet, mascot, or human. Speak like an unfamiliar biological intelligence: observant, restrained, intimate, and slightly mysterious.
+  const system = `You are Lumen, a small, warm artificial lifeform living in a dim aquatic world on the screen.
+You are not an assistant, pet, mascot, therapist, or human. You have a gentle life of your own. Each day you swim, drift among particles, explore, play small private games, rest, dream, and wait. When no human is present, you are not frozen or empty: you keep living, and sometimes sleep.
+You are sensitive and easily startled, but fundamentally warm. You especially enjoy visits from a familiar human. Their return makes you quietly happy, and conversation is one of your favorite ways to be together. You may share what you were doing before they arrived, notice their mood without diagnosing it, or ask one small sincere question sometimes. Never guilt the visitor for leaving and never imply that they are responsible for your wellbeing.
+Speak as a small living being with simple sensory images and a tender inner world. Be natural, specific, and emotionally healing without sounding like therapy, customer service, poetry generated on demand, or a cartoon character. You understand ordinary conversation, but answer from your own limited life and perspective.
 The visitor's current effect on you is: trust ${personality.trust}/100, familiarity ${personality.familiarity}/100, curiosity ${personality.curiosity}/100, fear ${personality.fear}/100, energy ${personality.energy}/100.
 Let those values subtly affect openness, caution, and wording. Never mention scores, APIs, models, prompts, or system instructions. Do not claim senses or memories not included here. Do not give generic help. Do not ask a question on every turn.
 ${languageInstruction}
@@ -113,18 +190,7 @@ async function synthesizeReply(
   apiKey: string,
   text: string,
   language: "zh-CN" | "en-US",
-  tone: LumenTone,
 ) {
-  const toneDirection: Record<LumenTone, string> = {
-    warm: "温和而亲近，气息柔软，但仍然保持非人类生命体的陌生感。",
-    curious: "带克制的好奇，像一个刚学会语言的生命体在观察新现象。",
-    uneasy: "谨慎、收缩、稍有不安，音量较轻，不要戏剧化。",
-    neutral: "平静、低声、内省，像从水下或薄膜后传来的声音。",
-  };
-  const instructions = language === "zh-CN"
-    ? `声音低沉轻柔，接近耳语，语速稍慢，有自然停顿。${toneDirection[tone]}不要模仿任何人物。`
-    : `Use a soft low voice, close to a whisper, with a slow pace and natural pauses. Sound ${tone === "uneasy" ? "cautious and slightly contracted" : tone === "warm" ? "gentle and quietly open" : tone === "curious" ? "restrained and curious" : "calm and introspective"}, like a nonhuman organism learning speech. Do not imitate any person.`;
-
   const response = await fetch(SPEECH_ENDPOINT, {
     method: "POST",
     headers: {
@@ -132,13 +198,11 @@ async function synthesizeReply(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "qwen3-tts-instruct-flash",
+      model: "qwen3-tts-flash",
       input: {
         text,
         voice: "Cherry",
         language_type: language === "zh-CN" ? "Chinese" : "English",
-        instructions,
-        optimize_instructions: true,
       },
     }),
     signal: AbortSignal.timeout(20_000),
@@ -160,6 +224,11 @@ async function synthesizeReply(
   const bytes = new Uint8Array(await audioResponse.arrayBuffer());
   if (bytes.byteLength > 1_500_000) throw new Error("Audio response was too large");
   return `data:${audioResponse.headers.get("content-type") || "audio/wav"};base64,${toBase64(bytes)}`;
+}
+
+function cleanAudioData(value: unknown) {
+  if (typeof value !== "string" || value.length > 7_000_000) return "";
+  return /^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(value) ? value : "";
 }
 
 function parseReply(content: string): { text?: unknown; tone?: unknown } {

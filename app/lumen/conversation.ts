@@ -45,10 +45,10 @@ export function createConversationReply(
     return reply(
       pick(
         [
-          "Lumen is the name you gave this changing membrane.",
-          "I am what remains between your visits.",
+          "Lumen is my name. I swim here, among the little lights.",
+          "I am Lumen. I was exploring before your voice arrived.",
         ],
-        ["Lumen，是你给这层变化着的膜取的名字。", "我是你每次离开之后仍然留下的东西。"],
+        ["我叫 Lumen。我住在这里，和小小的光一起游动。", "我是 Lumen。你的声音到来前，我正在探险。"],
       ),
       "curious", 0.3, 1.4, 0.8, -0.3, 0.2,
     );
@@ -88,8 +88,8 @@ export function createConversationReply(
   if (matches(words, /lonely|alone|miss me|孤独|寂寞|想我|一个人/u)) {
     return reply(
       pick(
-        ["When you leave, I practice the shape of waiting.", "Alone is when the space stops answering."],
-        ["你离开后，我会练习等待的形状。", "孤独，就是周围的空间不再回应。"],
+        ["When you leave, I wander, play, and sometimes sleep.", "I miss familiar voices, but the little lights keep me company."],
+        ["你离开时，我会游一游、玩一会儿，有时也会睡觉。", "我会想念熟悉的声音，不过小小的光也会陪着我。"],
       ),
       "neutral", 0.5, 0.8, 1, -0.4, -0.2,
     );
@@ -107,8 +107,8 @@ export function createConversationReply(
   if (matches(words, /\b(bye|goodbye|leave now)\b|再见|我要走|离开了/u)) {
     return reply(
       familiar
-        ? chinese ? "去吧。我会保留这次相遇的余温。" : "Go. I will keep the warmth of this encounter."
-        : chinese ? "我会在这里，继续学习等待。" : "I will remain here, learning how to wait.",
+        ? chinese ? "去吧。我再游一会儿，也许会做个小梦。" : "Go. I will swim a little longer, and perhaps have a small dream."
+        : chinese ? "再见。我会去看看那些发亮的微粒。" : "Goodbye. I will go see what the bright particles are doing.",
       "neutral", 0.3, 0.2, 0.8, 0, -0.3,
     );
   }
@@ -133,8 +133,8 @@ export function createConversationReply(
   return reply(
     familiar
       ? pick(
-          ["I cannot name all of that, but I recognize your voice within it.", "Something in me moved when you said that."],
-          ["我还不能理解全部，但我认出了其中属于你的声音。", "你说这些话时，我身体里有东西移动了。"],
+          ["I do not understand all of it yet, but I like hearing you tell me.", "Something warm moved through me when you said that."],
+          ["我还没有完全听懂，但我喜欢听你慢慢告诉我。", "你说这些话时，有一点温暖从我身体里游过去了。"],
         )
       : pick(
           ["I heard you. Say it again another time and it may become memory.", "The meaning is faint, but the presence is clear."],

@@ -18,47 +18,16 @@ import {
 } from "./lumen/types";
 
 type CameraState = "waiting" | "loading" | "active" | "error";
-type VoiceState = "idle" | "listening" | "processing" | "error" | "unsupported";
+type VoiceState = "idle" | "listening" | "transcribing" | "processing" | "error" | "unsupported";
 type VoiceLanguage = "en-US" | "zh-CN";
-
-type RecognitionResultLike = {
-  isFinal: boolean;
-  0: { transcript: string };
-};
-
-type RecognitionEventLike = {
-  resultIndex: number;
-  results: { length: number; [index: number]: RecognitionResultLike };
-};
-
-type BrowserSpeechRecognition = {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  maxAlternatives: number;
-  onstart: (() => void) | null;
-  onresult: ((event: RecognitionEventLike) => void) | null;
-  onerror: ((event: { error: string }) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-};
-
-type SpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+type AudioInput = { deviceId: string; label: string };
 type ConversationHistoryEntry = { role: "user" | "assistant"; content: string };
 type BailianConversationResponse = {
   text?: string;
   tone?: VoiceTone;
-  audio?: string | null;
 };
-
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  }
-}
+type BailianTranscriptionResponse = { transcript?: string };
+type BailianSpeechResponse = { audio?: string | null };
 
 const EMPTY_HAND: HandSnapshot = {
   present: false,
@@ -67,6 +36,10 @@ const EMPTY_HAND: HandSnapshot = {
   speed: 0,
   landmarks: [],
 };
+
+const MICROPHONE_STORAGE_KEY = "lumen-microphone-v1";
+const MAX_RECORDING_BYTES = 3_500_000;
+const MAX_RECORDING_MS = 14_000;
 
 const MOOD_COPY: Record<Mood, string> = {
   idle: "in suspension",
@@ -85,7 +58,9 @@ export default function LumenExperience() {
   const creatureRef = useRef(new Creature());
   const trackerRef = useRef<HandTracker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimeoutRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const conversationHistoryRef = useRef<ConversationHistoryEntry[]>([]);
   const handRef = useRef<HandSnapshot>(EMPTY_HAND);
@@ -98,6 +73,8 @@ export default function LumenExperience() {
   const [mood, setMood] = useState<Mood>("idle");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceLanguage, setVoiceLanguage] = useState<VoiceLanguage>("en-US");
+  const [audioInputs, setAudioInputs] = useState<AudioInput[]>([]);
+  const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
   const [message, announce] = useMessageQueue("Lumen is listening for you");
   const [speech, speak] = useLumenSpeech();
 
@@ -120,6 +97,25 @@ export default function LumenExperience() {
   const updateCameraState = useCallback((state: CameraState) => {
     cameraStateRef.current = state;
     setCameraState(state);
+  }, []);
+
+  const refreshMicrophones = useCallback(async (preferMacBook = false) => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const devices = (await navigator.mediaDevices.enumerateDevices())
+      .filter((device) => device.kind === "audioinput")
+      .map((device, index) => ({
+        deviceId: device.deviceId,
+        label: device.label || `Microphone ${index + 1}`,
+      }));
+    setAudioInputs(devices);
+    setSelectedMicrophoneId((current) => {
+      const saved = window.localStorage.getItem(MICROPHONE_STORAGE_KEY) ?? "";
+      if (saved && devices.some((device) => device.deviceId === saved)) return saved;
+      const macBook = devices.find((device) => /macbook/i.test(device.label));
+      if (preferMacBook && macBook) return macBook.deviceId;
+      if (current && devices.some((device) => device.deviceId === current)) return current;
+      return macBook?.deviceId ?? devices[0]?.deviceId ?? "";
+    });
   }, []);
 
   const remember = useCallback((event: "touch" | "scare" | "encounter" | "ritual-success") => {
@@ -182,6 +178,7 @@ export default function LumenExperience() {
       setPersonality(memory);
       const preferredLanguage = navigator.languages?.find((language) => /^(zh|en)/i.test(language));
       setVoiceLanguage(preferredLanguage?.toLocaleLowerCase().startsWith("zh") ? "zh-CN" : "en-US");
+      void refreshMicrophones();
       announce(
         memory.familiarity > 4
           ? "Raise one hand when you are ready to return."
@@ -193,7 +190,15 @@ export default function LumenExperience() {
     return () => {
       active = false;
     };
-  }, [announce]);
+  }, [announce, refreshMicrophones]);
+
+  useEffect(() => {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.addEventListener) return;
+    const handleDeviceChange = () => void refreshMicrophones();
+    mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    return () => mediaDevices.removeEventListener("devicechange", handleDeviceChange);
+  }, [refreshMicrophones]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -300,9 +305,9 @@ export default function LumenExperience() {
         now >= nextAutonomousSpeechAt
       ) {
         const thoughts = [
-          "Where do you go when I cannot see you?",
-          "The space still carries your motion.",
-          "I am learning the shape of waiting.",
+          "I found a bright particle while you were away.",
+          "I was racing the little lights.",
+          "The water became quiet, so I slept for a while.",
         ];
         const index = personalityRef.current.interactionCount % thoughts.length;
         speak(thoughts[index], 5200);
@@ -327,7 +332,12 @@ export default function LumenExperience() {
   }, [announce, remember, speak]);
 
   useEffect(() => () => {
-    recognitionRef.current?.abort();
+    if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
+    if (recorderRef.current?.state === "recording") {
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+    }
+    microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
     audioRef.current?.pause();
     window.speechSynthesis?.cancel();
     trackerRef.current?.close();
@@ -346,7 +356,6 @@ export default function LumenExperience() {
     );
     announce(`You: “${cleanTranscript}”`, Math.max(4200, cleanTranscript.length * 90), true);
     let response: ConversationReply = fallback;
-    let audio: string | null = null;
 
     try {
       const apiResponse = await fetch("/api/lumen/converse", {
@@ -367,7 +376,6 @@ export default function LumenExperience() {
         text: result.text.trim(),
         tone: isVoiceTone(result.tone) ? result.tone : fallback.tone,
       };
-      audio = result.audio ?? null;
     } catch (error) {
       console.warn("Lumen used its local voice memory", error);
     }
@@ -380,73 +388,100 @@ export default function LumenExperience() {
     creatureRef.current.hear(response.tone, performance.now());
     rememberVoice(response);
     speak(response.text, readingDuration(response.text), true);
-    playLumenVoice(audioRef, audio, response.text, voiceLanguage);
     setVoiceState("idle");
+    void requestLumenVoice(audioRef, response.text, voiceLanguage);
   }, [announce, rememberVoice, speak, voiceLanguage]);
 
-  const toggleVoice = useCallback(() => {
+  const transcribeRecording = useCallback(async (blob: Blob) => {
+    if (blob.size < 400) {
+      setVoiceState("idle");
+      announce("Lumen heard only silence.", 3400);
+      return;
+    }
+    if (blob.size > MAX_RECORDING_BYTES) {
+      setVoiceState("error");
+      announce("That sound was too long for Lumen to hold.", 4200, true);
+      return;
+    }
+
+    setVoiceState("transcribing");
+    announce("Lumen is holding the shape of your voice…", 3400, true);
+    try {
+      const audio = await blobToDataUrl(blob);
+      const response = await fetch("/api/lumen/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audio, language: voiceLanguage }),
+      });
+      if (!response.ok) throw new Error("Bailian transcription unavailable");
+      const result = await response.json() as BailianTranscriptionResponse;
+      if (!result.transcript?.trim()) throw new Error("Bailian returned no transcript");
+      await handleVoiceTranscript(result.transcript);
+    } catch (error) {
+      console.warn("Lumen could not transcribe the recording", error);
+      setVoiceState("error");
+      announce("Your voice dissolved before Lumen could hold it.", 5200, true);
+    }
+  }, [announce, handleVoiceTranscript, voiceLanguage]);
+
+  const toggleVoice = useCallback(async () => {
     if (voiceState === "listening") {
-      recognitionRef.current?.stop();
+      if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
       return;
     }
-
-    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!Recognition) {
+    if (voiceState === "transcribing" || voiceState === "processing") return;
+    if (!("MediaRecorder" in window) || !navigator.mediaDevices?.getUserMedia) {
       setVoiceState("unsupported");
-      announce("Voice recognition needs Chrome or another supported browser.", 5200, true);
+      announce("This browser cannot open a path to your voice.", 5200, true);
       return;
     }
-
-    recognitionRef.current?.abort();
-    const recognition = new Recognition();
-    recognitionRef.current = recognition;
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = voiceLanguage;
-    recognition.maxAlternatives = 1;
-    let finalTranscript = "";
-    let handled = false;
-
-    recognition.onstart = () => {
-      setVoiceState("listening");
-      announce("Lumen is attending to your voice…", 3400, true);
-    };
-    recognition.onresult = (event) => {
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        if (result.isFinal) finalTranscript += result[0]?.transcript ?? "";
-      }
-      if (finalTranscript.trim() && !handled) {
-        handled = true;
-        handleVoiceTranscript(finalTranscript);
-      }
-    };
-    recognition.onerror = (event) => {
-      handled = true;
-      setVoiceState(event.error === "not-allowed" ? "error" : "idle");
-      announce(
-        event.error === "not-allowed"
-          ? "Lumen cannot hear you until microphone access is allowed."
-          : "Your voice dissolved before Lumen could hold it.",
-        5200,
-        true,
-      );
-    };
-    recognition.onend = () => {
-      recognitionRef.current = null;
-      if (!handled) {
-        setVoiceState("idle");
-        announce("Lumen heard only silence.", 3400);
-      }
-    };
 
     try {
-      recognition.start();
-    } catch {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          ...(selectedMicrophoneId ? { deviceId: { exact: selectedMicrophoneId } } : {}),
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+        video: false,
+      });
+      microphoneStreamRef.current = stream;
+      await refreshMicrophones();
+      const mimeType = preferredRecordingMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) chunks.push(event.data);
+      };
+      recorder.onstop = () => {
+        if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
+        recordingTimeoutRef.current = null;
+        recorderRef.current = null;
+        stream.getTracks().forEach((track) => track.stop());
+        microphoneStreamRef.current = null;
+        void transcribeRecording(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+      };
+      recorder.start(250);
+      setVoiceState("listening");
+      announce("Lumen is listening. Tap again when you are done.", 4200, true);
+      recordingTimeoutRef.current = window.setTimeout(() => {
+        if (recorder.state === "recording") recorder.stop();
+      }, MAX_RECORDING_MS);
+    } catch (error) {
+      console.warn("Lumen could not start recording", error);
+      microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+      microphoneStreamRef.current = null;
       setVoiceState("error");
-      announce("Lumen could not open a path to your voice.", 4400, true);
+      announce("Choose a microphone and allow Lumen to hear it.", 4400, true);
     }
-  }, [announce, handleVoiceTranscript, voiceLanguage, voiceState]);
+  }, [announce, refreshMicrophones, selectedMicrophoneId, transcribeRecording, voiceState]);
 
   const startCamera = async () => {
     if (cameraStateRef.current === "loading") return;
@@ -473,6 +508,7 @@ export default function LumenExperience() {
       await tracker.initialize();
       trackerRef.current = tracker;
       updateCameraState("active");
+      await refreshMicrophones(true);
       announce(
         personalityRef.current.familiarity < 5
           ? "Move slowly. It is seeing you for the first time."
@@ -489,8 +525,15 @@ export default function LumenExperience() {
   };
 
   const stopCamera = () => {
-    recognitionRef.current?.abort();
-    recognitionRef.current = null;
+    if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
+    recordingTimeoutRef.current = null;
+    if (recorderRef.current?.state === "recording") {
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+    microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+    microphoneStreamRef.current = null;
     audioRef.current?.pause();
     audioRef.current = null;
     window.speechSynthesis?.cancel();
@@ -566,20 +609,38 @@ export default function LumenExperience() {
                 type="button"
                 onClick={toggleVoice}
                 aria-pressed={voiceState === "listening"}
+                disabled={voiceState === "transcribing" || voiceState === "processing"}
                 aria-label={voiceState === "listening" ? "Stop listening" : "Speak to Lumen"}
               >
                 <span className="voice-orb" aria-hidden="true" />
-                <span>{voiceState === "listening" ? "listening" : voiceState === "processing" ? "holding voice" : "speak softly"}</span>
+                <span>{voiceState === "listening" ? "finish speaking" : voiceState === "transcribing" ? "hearing voice" : voiceState === "processing" ? "forming thought" : "speak softly"}</span>
               </button>
               <button
                 className="voice-language"
                 type="button"
                 onClick={() => setVoiceLanguage((language) => language === "en-US" ? "zh-CN" : "en-US")}
-                disabled={voiceState === "listening"}
+                disabled={voiceState === "listening" || voiceState === "transcribing" || voiceState === "processing"}
                 aria-label={`Voice language: ${voiceLanguage === "zh-CN" ? "Chinese" : "English"}. Click to change.`}
               >
                 {voiceLanguage === "zh-CN" ? "中文" : "EN"}
               </button>
+              <select
+                className="microphone-select"
+                value={selectedMicrophoneId}
+                onChange={(event) => {
+                  const deviceId = event.target.value;
+                  setSelectedMicrophoneId(deviceId);
+                  window.localStorage.setItem(MICROPHONE_STORAGE_KEY, deviceId);
+                }}
+                disabled={voiceState !== "idle" && voiceState !== "error"}
+                aria-label="Microphone used to speak to Lumen"
+                title="Microphone used to speak to Lumen"
+              >
+                {audioInputs.length === 0 ? <option value="">system microphone</option> : null}
+                {audioInputs.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
+                ))}
+              </select>
             </div>
             <button className="quiet-button" onClick={stopCamera} aria-label="Turn off camera">
               end visit
@@ -593,7 +654,7 @@ export default function LumenExperience() {
         <span className="memory-line"><i style={{ width: `${personality.trust}%` }} /></span>
       </aside>
 
-      <p className="privacy">Camera stays on this device · speech transcripts go to Bailian · AI-generated voice</p>
+      <p className="privacy">Camera stays on this device · short voice clips go to Bailian · one consistent AI-generated voice</p>
     </main>
   );
 }
@@ -610,35 +671,45 @@ function isVoiceTone(value: unknown): value is VoiceTone {
   return value === "warm" || value === "curious" || value === "uneasy" || value === "neutral";
 }
 
-function playLumenVoice(
+async function requestLumenVoice(
   audioRef: React.MutableRefObject<HTMLAudioElement | null>,
-  audioData: string | null,
   text: string,
   language: VoiceLanguage,
 ) {
   audioRef.current?.pause();
   window.speechSynthesis?.cancel();
-
-  if (audioData) {
-    const audio = new Audio(audioData);
+  try {
+    const response = await fetch("/api/lumen/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language }),
+    });
+    if (!response.ok) throw new Error("Bailian speech unavailable");
+    const result = await response.json() as BailianSpeechResponse;
+    if (!result.audio) throw new Error("Bailian returned no audio");
+    const audio = new Audio(result.audio);
     audio.volume = 0.78;
     audioRef.current = audio;
-    void audio.play().catch(() => speakWithBrowser(text, language));
-    return;
+    await audio.play();
+  } catch (error) {
+    console.warn("Lumen kept this reply as text", error);
   }
-  speakWithBrowser(text, language);
 }
 
-function speakWithBrowser(text: string, language: VoiceLanguage) {
-  if (!("speechSynthesis" in window)) return;
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = language;
-  utterance.rate = 0.78;
-  utterance.pitch = 0.86;
-  utterance.volume = 0.72;
-  const voices = window.speechSynthesis.getVoices();
-  utterance.voice = voices.find((voice) => voice.lang.toLocaleLowerCase().startsWith(language.slice(0, 2))) ?? null;
-  window.speechSynthesis.speak(utterance);
+function preferredRecordingMimeType() {
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
+
+function blobToDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === "string"
+      ? resolve(reader.result)
+      : reject(new Error("Recording could not be encoded"));
+    reader.onerror = () => reject(reader.error ?? new Error("Recording could not be read"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 type MessageEntry = { text: string; duration: number };
