@@ -413,14 +413,28 @@ export default function LumenExperience() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audio, language: voiceLanguage }),
       });
-      if (!response.ok) throw new Error("Bailian transcription unavailable");
-      const result = await response.json() as BailianTranscriptionResponse;
+      const result = await response.json() as BailianTranscriptionResponse & { error?: string };
+      if (!response.ok) throw new Error(result.error || `Bailian transcription failed (${response.status})`);
       if (!result.transcript?.trim()) throw new Error("Bailian returned no transcript");
       await handleVoiceTranscript(result.transcript);
     } catch (error) {
-      console.warn("Lumen could not transcribe the recording", error);
+      console.warn("Lumen could not transcribe the recording", {
+        error,
+        mimeType: blob.type,
+        bytes: blob.size,
+      });
       setVoiceState("error");
-      announce("Your voice dissolved before Lumen could hold it.", 5200, true);
+      announce(
+        error instanceof Error && /no available balance/i.test(error.message)
+          ? voiceLanguage === "zh-CN"
+            ? "百炼账户目前没有可用额度，请检查阿里云的费用与成本。"
+            : "Bailian has no available balance. Check the Alibaba Cloud billing account."
+          : error instanceof Error && /No usable recording/i.test(error.message)
+            ? "Lumen received the recording, but could not read its audio format."
+            : "Lumen received your voice, but could not recognize it this time.",
+        5200,
+        true,
+      );
     }
   }, [announce, handleVoiceTranscript, voiceLanguage]);
 

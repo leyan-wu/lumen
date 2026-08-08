@@ -58,6 +58,9 @@ export async function handleLumenConversation(request: Request, apiKey?: string)
     return json({ ...generated, source: "bailian" });
   } catch (error) {
     console.error("Bailian conversation failed", safeError(error));
+    if (isArrearage(error)) {
+      return json({ error: "Bailian has no available balance. Check the Alibaba Cloud billing account." }, 402);
+    }
     return json({ error: "Lumen could not form a distant response." }, 502);
   }
 }
@@ -96,7 +99,7 @@ export async function handleLumenTranscription(request: Request, apiKey?: string
       }),
       signal: AbortSignal.timeout(16_000),
     });
-    if (!response.ok) throw new Error(`ASR request failed with ${response.status}`);
+    if (!response.ok) throw await apiResponseError("ASR", response);
     const payload = await response.json() as {
       choices?: Array<{ message?: { content?: string } }>;
     };
@@ -105,6 +108,9 @@ export async function handleLumenTranscription(request: Request, apiKey?: string
     return json({ transcript, source: "bailian" });
   } catch (error) {
     console.error("Bailian transcription failed", safeError(error));
+    if (isArrearage(error)) {
+      return json({ error: "Bailian has no available balance. Check the Alibaba Cloud billing account." }, 402);
+    }
     return json({ error: "Lumen could not hold the sound clearly." }, 502);
   }
 }
@@ -130,6 +136,9 @@ export async function handleLumenSpeech(request: Request, apiKey?: string) {
     return json({ audio, source: "bailian" });
   } catch (error) {
     console.error("Bailian speech synthesis failed", safeError(error));
+    if (isArrearage(error)) {
+      return json({ error: "Bailian has no available balance. Check the Alibaba Cloud billing account." }, 402);
+    }
     return json({ error: "Lumen could not form a voice." }, 502);
   }
 }
@@ -173,7 +182,7 @@ Return exactly one JSON object with this schema: {"text":"your reply","tone":"wa
     signal: AbortSignal.timeout(16_000),
   });
 
-  if (!response.ok) throw new Error(`Chat request failed with ${response.status}`);
+  if (!response.ok) throw await apiResponseError("Chat", response);
   const payload = await response.json() as {
     choices?: Array<{ message?: { content?: string } }>;
   };
@@ -208,7 +217,7 @@ async function synthesizeReply(
     signal: AbortSignal.timeout(20_000),
   });
 
-  if (!response.ok) throw new Error(`Speech request failed with ${response.status}`);
+  if (!response.ok) throw await apiResponseError("Speech", response);
   const payload = await response.json() as {
     output?: { audio?: { url?: string; data?: string } };
   };
@@ -228,7 +237,19 @@ async function synthesizeReply(
 
 function cleanAudioData(value: unknown) {
   if (typeof value !== "string" || value.length > 7_000_000) return "";
-  return /^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(value) ? value : "";
+  const match = value.match(
+    /^data:(audio\/(?:webm|ogg|mp4|mpeg|wav|x-wav|aac|aiff))(?:;codecs=[a-z0-9._-]+)?;base64,([a-z0-9+/=]+)$/i,
+  );
+  return match ? `data:${match[1]};base64,${match[2]}` : "";
+}
+
+async function apiResponseError(label: string, response: Response) {
+  const detail = cleanText(await response.text(), 480);
+  return new Error(`${label} request failed with ${response.status}${detail ? `: ${detail}` : ""}`);
+}
+
+function isArrearage(error: unknown) {
+  return /Arrearage|overdue-payment|account is in good standing/i.test(safeError(error));
 }
 
 function parseReply(content: string): { text?: unknown; tone?: unknown } {

@@ -37,11 +37,12 @@ test("server-renders the Lumen experience", async () => {
 });
 
 test("bundles hand tracking, voice conversation, and hydration-safe memory", async () => {
-  const [tracker, types, experience, conversation, model] = await Promise.all([
+  const [tracker, types, experience, conversation, bailian, model] = await Promise.all([
     readFile(new URL("../app/lumen/hand-tracker.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lumen/types.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/LumenExperience.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lumen/conversation.ts", import.meta.url), "utf8"),
+    readFile(new URL("../worker/bailian.ts", import.meta.url), "utf8"),
     stat(new URL("../public/mediapipe/models/hand_landmarker.task", import.meta.url)),
   ]);
 
@@ -59,6 +60,7 @@ test("bundles hand tracking, voice conversation, and hydration-safe memory", asy
   assert.match(experience, /\/api\/lumen\/converse/);
   assert.match(experience, /\/api\/lumen\/speak/);
   assert.match(conversation, /createConversationReply/);
+  assert.match(bailian, /;codecs=/);
   assert.ok(model.size > 1_000_000);
 });
 
