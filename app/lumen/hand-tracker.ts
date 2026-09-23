@@ -22,6 +22,8 @@ export class HandTracker {
   private previousTime = 0;
   private smoothedSpeed = 0;
   private latest: HandSnapshot = EMPTY_HAND;
+  private missingSince: number | null = null;
+  private lastFrameAt = 0;
 
   async initialize() {
     const vision = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
@@ -51,10 +53,11 @@ export class HandTracker {
   }
 
   update(video: HTMLVideoElement, now: number): HandSnapshot {
-    if (!this.landmarker || video.readyState < 2) return this.latest;
-    if (video.currentTime === this.lastVideoTime) return this.latest;
+    if (!this.landmarker || video.readyState < 2) return EMPTY_HAND;
+    if (video.currentTime === this.lastVideoTime) return now - this.lastFrameAt < 350 ? this.latest : EMPTY_HAND;
 
     this.lastVideoTime = video.currentTime;
+    this.lastFrameAt = now;
     const result = this.landmarker.detectForVideo(video, now);
     this.latest = this.toSnapshot(result, now);
     return this.latest;
@@ -68,12 +71,17 @@ export class HandTracker {
   private toSnapshot(result: HandLandmarkerResult, now: number): HandSnapshot {
     const landmarks = result.landmarks[0];
     if (!landmarks) {
+      this.missingSince ??= now;
+      // Bridge a dropped detection, but never retain stale speed/contact.
+      if (now - this.missingSince < 160 && this.latest.present) return { ...this.latest, speed: 0 };
       this.previousCenter = null;
       this.smoothedCenter = null;
       this.smoothedIndexTip = null;
-      this.smoothedSpeed *= 0.75;
+      this.smoothedSpeed = 0;
+      this.previousTime = 0;
       return { ...EMPTY_HAND, speed: this.smoothedSpeed };
     }
+    this.missingSince = null;
 
     const palmIndices = [0, 5, 9, 13, 17];
     const center = palmIndices.reduce(

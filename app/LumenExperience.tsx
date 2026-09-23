@@ -2,6 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Creature } from "./lumen/creature";
+import {
+  GestureInterpreter,
+  recentGestureContext,
+  type GestureObservation,
+} from "./lumen/gestures";
+import { readMemory, writeMemory } from "./lumen/storage";
+import { CloudVoicePlayer } from "./lumen/voice-player";
+import { requestJson, requestErrorMessage, LumenRequestError } from "./lumen/requests";
 import { HandTracker } from "./lumen/hand-tracker";
 import {
   createConversationReply,
@@ -32,7 +40,6 @@ type CameraState = "waiting" | "loading" | "active" | "error";
 type VoiceState = "idle" | "listening" | "recording" | "transcribing" | "processing" | "speaking" | "error" | "unsupported";
 type VoiceLanguage = "en-US" | "zh-CN";
 type LumenVoice = "Maia" | "Andre" | "Neil";
-type ReplySource = "none" | "bailian" | "local";
 type AudioInput = { deviceId: string; label: string };
 type ConversationHistoryEntry = { role: "user" | "assistant"; content: string };
 type BailianConversationResponse = {
@@ -58,7 +65,7 @@ const MAX_RECORDING_BYTES = 3_500_000;
 const MAX_RECORDING_MS = 12_000;
 const VOICE_START_LEVEL = 0.026;
 const VOICE_END_LEVEL = 0.018;
-const VOICE_END_SILENCE_MS = 620;
+const VOICE_END_SILENCE_MS = 1000;
 const VOICE_MIN_TURN_MS = 420;
 
 const MOOD_COPY: Record<Mood, string> = {
@@ -100,8 +107,13 @@ export default function LumenExperience() {
   const handCanvasRef = useRef<HTMLCanvasElement>(null);
   const speechRef = useRef<HTMLParagraphElement>(null);
   const activityRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const creatureRef = useRef(new Creature());
+  const gestureInterpreterRef = useRef(new GestureInterpreter());
+  const gestureHistoryRef = useRef<GestureObservation[]>([]);
+  const gestureReactionBusyRef = useRef(false);
+  const lastGestureReactionAtRef = useRef(-Infinity);
   const trackerRef = useRef<HandTracker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -110,12 +122,18 @@ export default function LumenExperience() {
   const vadFrameRef = useRef<number | null>(null);
   const vadSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const vadAnalyserRef = useRef<AnalyserNode | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const playerRef = useRef(new CloudVoicePlayer());
+  const turnRef = useRef<AbortController | null>(null);
+  const cameraAttemptRef = useRef(0);
+  const microphoneAttemptRef = useRef(0);
+  const lastUserSoundRef = useRef(-Infinity);
+  const gestureRepliesRef = useRef<string[]>([]);
+  const gestureHandlerRef = useRef<(gesture: GestureObservation) => void>(() => {});
+  const lastTouchBondRef = useRef(-Infinity);
+  const lastEncounterRef = useRef(-Infinity);
   const conversationActiveRef = useRef(false);
   const voiceStateRef = useRef<VoiceState>("idle");
   const greetedRef = useRef(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const conversationVoiceRef = useRef<LumenVoice>("Maia");
   const conversationHistoryRef = useRef<ConversationHistoryEntry[]>([]);
   const handRef = useRef<HandSnapshot>(EMPTY_HAND);
@@ -132,7 +150,10 @@ export default function LumenExperience() {
   const [conversationActive, setConversationActive] = useState(false);
   const [voiceLanguage, setVoiceLanguage] = useState<VoiceLanguage>("en-US");
   const [selectedVoice, setSelectedVoice] = useState<LumenVoice>("Maia");
-  const [replySource, setReplySource] = useState<ReplySource>("none");
+  const [gestureVoiceEnabled, setGestureVoiceEnabled] = useState(false);
+  const gestureVoiceEnabledRef = useRef(false);
+  const [memoryReady, setMemoryReady] = useState(false);
+  const guideRef = useRef<HTMLDialogElement>(null);
   const [activity, setActivity] = useState<LifeActivity>("exploring");
   const [audioInputs, setAudioInputs] = useState<AudioInput[]>([]);
   const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
@@ -140,9 +161,33 @@ export default function LumenExperience() {
   const [dreamText, setDreamText] = useState("");
   const [dreamOpen, setDreamOpen] = useState(false);
   const [dreamDay, setDreamDay] = useState("");
+  const [dreamError, setDreamError] = useState(false);
+  const [dreamLoading, setDreamLoading] = useState(false);
+  const [today, setToday] = useState("");
   const [guideOpen, setGuideOpen] = useState(true);
   const [message, announce] = useMessageQueue("Lumen is listening for you");
-  const [speech, speak] = useLumenSpeech();
+  const [speech, speak, clearSpeech] = useLumenSpeech();
+
+  const closeGuide = useCallback(() => {
+    writeMemory("lumen-guide-seen", "true");
+    setGuideOpen(false);
+  }, []);
+
+  const cancelTurn = useCallback(() => {
+    turnRef.current?.abort();
+    turnRef.current = null;
+    playerRef.current.stop();
+    gestureReactionBusyRef.current = false;
+    clearSpeech();
+  }, [clearSpeech]);
+
+  const beginTurnRequest = useCallback(() => {
+    turnRef.current?.abort();
+    playerRef.current.stop();
+    const turn = new AbortController();
+    turnRef.current = turn;
+    return turn;
+  }, []);
 
   const rememberDevelopment = useCallback((event: DevelopmentEvent) => {
     const next = develop(developmentRef.current, event);
@@ -179,6 +224,7 @@ export default function LumenExperience() {
   }, []);
 
   const refreshMicrophones = useCallback(async (preferMacBook = false) => {
+    try {
     if (!navigator.mediaDevices?.enumerateDevices) return;
     const devices = (await navigator.mediaDevices.enumerateDevices())
       .filter((device) => device.kind === "audioinput")
@@ -188,16 +234,22 @@ export default function LumenExperience() {
       }));
     setAudioInputs(devices);
     setSelectedMicrophoneId((current) => {
-      const saved = window.localStorage.getItem(MICROPHONE_STORAGE_KEY) ?? "";
+      const saved = readMemory(MICROPHONE_STORAGE_KEY) ?? "";
       if (saved && devices.some((device) => device.deviceId === saved)) return saved;
       const macBook = devices.find((device) => /macbook/i.test(device.label));
       if (preferMacBook && macBook) return macBook.deviceId;
       if (current && devices.some((device) => device.deviceId === current)) return current;
-      return macBook?.deviceId ?? devices[0]?.deviceId ?? "";
+      return macBook?.deviceId ?? "";
     });
+    } catch { /* Enumeration is optional before permission is granted. */ }
   }, []);
 
   const remember = useCallback((event: "touch" | "scare" | "encounter" | "presence-bond") => {
+    const now = performance.now();
+    if (event === "touch") {
+      if (now - lastTouchBondRef.current < 6000) return;
+      lastTouchBondRef.current = now;
+    }
     const previous = personalityRef.current;
     const next: Personality = event === "touch"
       ? {
@@ -244,6 +296,62 @@ export default function LumenExperience() {
     );
   }, [rememberDevelopment]);
 
+  const handleGestureReaction = useCallback(async (gesture: GestureObservation) => {
+    if (!gestureVoiceEnabledRef.current || cameraStateRef.current !== "active" || guideOpen) return;
+    if (gesture.kind === "approaching" || gesture.kind === "leaving") return;
+    if (gestureReactionBusyRef.current || !["idle", "listening"].includes(voiceStateRef.current)) return;
+    const now = performance.now();
+    // Leave space for spoken turns and don't narrate every touch.
+    if (now - lastGestureReactionAtRef.current < 24_000 || now - lastUserSoundRef.current < 2000) return;
+    gestureReactionBusyRef.current = true;
+    lastGestureReactionAtRef.current = now;
+    const turn = beginTurnRequest();
+    const startedAt = now;
+    updateVoiceState("processing");
+    try {
+      const result = await requestJson<BailianConversationResponse>("/api/lumen/converse", {
+        transcript: "",
+        interactionOnly: true,
+        gestures: recentGestureContext(gestureHistoryRef.current, now),
+        recentReactions: gestureRepliesRef.current,
+        language: voiceLanguage,
+        personality: personalityRef.current,
+        development: developmentRef.current,
+        activity: creatureRef.current.activity,
+        history: conversationHistoryRef.current,
+      }, turn.signal);
+      turn.signal.throwIfAborted();
+      const text = result.text?.trim();
+      if (!text || !handRef.current.present || performance.now() - startedAt > 10_000) return;
+      const normalize = (value: string) => value.toLocaleLowerCase().replace(/[\p{P}\p{Z}\s]/gu, "");
+      if (gestureRepliesRef.current.some(previous => normalize(previous) === normalize(text))) return;
+      gestureRepliesRef.current = [...gestureRepliesRef.current, text].slice(-6);
+      creatureRef.current.hear(isVoiceTone(result.tone) ? result.tone : "neutral", performance.now());
+      speak(text);
+      updateVoiceState("speaking");
+      const spoken = await playerRef.current.speak(text, voiceLanguage,
+        conversationActiveRef.current ? conversationVoiceRef.current : selectedVoice, turn.signal);
+      turn.signal.throwIfAborted();
+      if (!spoken) announce("The voice connection paused. Lumen’s words are still here.", 5000, true);
+    } catch (error) {
+      // A failed gesture remains a physical response, not a canned sentence.
+      if (!turn.signal.aborted) {
+        console.warn("Gesture response unavailable", error);
+        announce(voiceLanguage === "zh-CN" ? "语音暂时没有接通，Lumen 仍能感受到你的手。" : "Voice is unavailable; Lumen still responds to your hand.", 5000, true);
+      }
+    } finally {
+      if (turnRef.current === turn) {
+        turnRef.current = null;
+        gestureReactionBusyRef.current = false;
+        lastGestureReactionAtRef.current = performance.now();
+        lastUserSoundRef.current = performance.now();
+        updateVoiceState(conversationActiveRef.current ? "listening" : "idle");
+      }
+    }
+  }, [announce, beginTurnRequest, guideOpen, selectedVoice, speak, updateVoiceState, voiceLanguage]);
+
+  useEffect(() => { gestureHandlerRef.current = gesture => { void handleGestureReaction(gesture); }; }, [handleGestureReaction]);
+
   useEffect(() => {
     let active = true;
 
@@ -258,18 +366,21 @@ export default function LumenExperience() {
       developmentRef.current = rememberedDevelopment;
       setDevelopment(rememberedDevelopment);
       saveDevelopment(rememberedDevelopment);
+      setToday(localDayKey(new Date()));
       const currentActivity = lifeActivityFor(new Date());
       creatureRef.current.setActivity(currentActivity);
       setActivity(currentActivity);
       const preferredLanguage = navigator.languages?.find((language) => /^(zh|en)/i.test(language));
       setVoiceLanguage(preferredLanguage?.toLocaleLowerCase().startsWith("zh") ? "zh-CN" : "en-US");
-      const rememberedVoice = window.localStorage.getItem(VOICE_STORAGE_KEY);
+      const rememberedVoice = readMemory(VOICE_STORAGE_KEY);
       if (rememberedVoice === "Andre" || rememberedVoice === "Neil" || rememberedVoice === "Maia") {
         setSelectedVoice(rememberedVoice);
       }
       conversationHistoryRef.current = loadConversationHistory();
+      setGuideOpen(readMemory("lumen-guide-seen") !== "true");
+      setMemoryReady(true);
       void refreshMicrophones();
-      announce("Open the camera, then begin a conversation.", 3600);
+      announce("Open the camera for touch, or begin a conversation.", 5500);
     });
 
     return () => {
@@ -279,53 +390,60 @@ export default function LumenExperience() {
 
   useEffect(() => {
     const updateActivity = () => {
-      const next = lifeActivityFor(new Date());
+      const scheduled = lifeActivityFor(new Date());
+      const next = scheduled === "dreaming" && (conversationActiveRef.current || handRef.current.present) ? "exploring" : scheduled;
       creatureRef.current.setActivity(next);
       setActivity(next);
+      setDreamDay(localDayKey(new Date()));
     };
-    const timer = window.setInterval(updateActivity, 60_000);
+    updateActivity();
+    const timer = window.setInterval(updateActivity, 30_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [handPresent, conversationActive]);
 
   useEffect(() => {
-    const day = localDayKey(new Date());
-    queueMicrotask(() => setDreamDay(day));
+    if (!memoryReady) return;
+    const day = today || localDayKey(new Date());
     const cacheKey = `lumen-dream-v1:${day}:${voiceLanguage}`;
-    const cached = window.localStorage.getItem(cacheKey);
-    if (cached) {
-      queueMicrotask(() => setDreamText(cached));
-      return;
-    }
-
+    const lastKey = `lumen-last-dream:${voiceLanguage}`;
+    const cached = readMemory(cacheKey);
+    let last: { text: string; day: string } | null = null;
+    try {
+      const stored = JSON.parse(readMemory(lastKey) || "null");
+      if (typeof stored?.text === "string" && typeof stored?.day === "string") last = stored;
+    } catch { /* Ignore damaged dream memory. */ }
     const controller = new AbortController();
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      setDreamText(cached || last?.text || "");
+      setDreamDay(cached ? day : last?.day || "");
+      setDreamError(false);
+      setDreamLoading(!cached && activity === "dreaming");
+    });
+    if (cached || activity !== "dreaming") return () => controller.abort();
     void (async () => {
       try {
-        const response = await fetch("/api/lumen/dream", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            language: voiceLanguage,
-            personality: personalityRef.current,
-            day,
-          }),
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error("Dream generation unavailable");
-        const result = await response.json() as BailianDreamResponse;
-        if (!result.dream?.trim()) throw new Error("Dream contained no text");
+        const result = await requestJson<BailianDreamResponse>("/api/lumen/dream", {
+          language: voiceLanguage, personality: personalityRef.current, day,
+        }, controller.signal);
+        controller.signal.throwIfAborted();
+        if (!result.dream?.trim()) throw new Error("Empty dream");
         const dream = result.dream.trim();
-        window.localStorage.setItem(cacheKey, dream);
+        writeMemory(cacheKey, dream);
+        writeMemory(lastKey, JSON.stringify({ text: dream, day }));
         setDreamText(dream);
+        setDreamDay(day);
       } catch (error) {
-        if (controller.signal.aborted) return;
-        console.warn("Lumen kept its dream below the surface", error);
-        setDreamText(voiceLanguage === "zh-CN"
-          ? "一颗发亮的种子追着自己的影子，游过一片没有尽头的水。"
-          : "A bright seed chased its own shadow through water without an edge.");
+        if (!controller.signal.aborted) {
+          console.warn("Dream unavailable", error);
+          setDreamError(true);
+        }
+      } finally {
+        if (!controller.signal.aborted) setDreamLoading(false);
       }
     })();
     return () => controller.abort();
-  }, [voiceLanguage]);
+  }, [voiceLanguage, memoryReady, dreamOpen, activity, today]);
 
   useEffect(() => {
     const mediaDevices = navigator.mediaDevices;
@@ -336,13 +454,13 @@ export default function LumenExperience() {
   }, [refreshMicrophones]);
 
   useEffect(() => {
-    if (!guideOpen) return;
-    const closeGuide = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setGuideOpen(false);
-    };
-    window.addEventListener("keydown", closeGuide);
-    return () => window.removeEventListener("keydown", closeGuide);
-  }, [guideOpen]);
+    const dialog = guideRef.current;
+    if (guideOpen && memoryReady && dialog) {
+      dialog.showModal();
+      dialog.focus({ preventScroll: true });
+      dialog.scrollTop = 0;
+    } else dialog?.close();
+  }, [guideOpen, memoryReady]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -354,7 +472,6 @@ export default function LumenExperience() {
     let previousTime = performance.now();
     let previousMood: Mood = "idle";
     let previousHandPresence = false;
-    let lastEncounterAt = -Infinity;
 
     const resize = () => {
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
@@ -374,14 +491,23 @@ export default function LumenExperience() {
 
       const video = videoRef.current;
       const tracker = trackerRef.current;
-      handRef.current = cameraStateRef.current === "active" && video && tracker
-        ? tracker.update(video, now)
-        : EMPTY_HAND;
+      try {
+        handRef.current = cameraStateRef.current === "active" && video && tracker && !document.hidden
+          ? tracker.update(video, now)
+          : EMPTY_HAND;
+      } catch {
+        handRef.current = EMPTY_HAND;
+        trackerRef.current?.close();
+        trackerRef.current = null;
+        streamRef.current?.getTracks().forEach(track => track.stop());
+        updateCameraState("error");
+        announce("Hand tracking paused. Reopen the camera to try again.", 6000, true);
+      }
       if (handRef.current.present !== previousHandPresence) {
         previousHandPresence = handRef.current.present;
         setHandPresent(previousHandPresence);
-        if (previousHandPresence && now - lastEncounterAt > 5000) {
-          lastEncounterAt = now;
+        if (previousHandPresence && now - lastEncounterRef.current > 30_000) {
+          lastEncounterRef.current = now;
           remember("encounter");
         }
       }
@@ -395,7 +521,20 @@ export default function LumenExperience() {
         height,
         now,
         delta,
+        (controlsRef.current?.offsetTop ?? height) - 32,
       );
+      const gestureObservations = gestureInterpreterRef.current.observe(
+        handRef.current,
+        creature.sense(),
+        event,
+        now,
+      );
+      for (const observation of gestureObservations) {
+        gestureHistoryRef.current = [...gestureHistoryRef.current, observation]
+          .filter((item) => now - item.observedAt <= 30_000)
+          .slice(-8);
+        gestureHandlerRef.current(observation);
+      }
       if (event === "touch") {
         remember(event);
       }
@@ -412,12 +551,13 @@ export default function LumenExperience() {
 
       if (speechRef.current) {
         const speechOffset = Math.max(108, Math.min(width, height) * 0.19);
-        speechRef.current.style.left = `${creature.position.x}px`;
-        speechRef.current.style.top = `${Math.max(86, creature.position.y - speechOffset)}px`;
+        const halfWidth = speechRef.current.offsetWidth / 2 + 16;
+        speechRef.current.style.left = `${Math.max(halfWidth, Math.min(width - halfWidth, creature.position.x))}px`;
+        speechRef.current.style.top = `${Math.max(96, Math.min(height * 0.48, creature.position.y - speechOffset))}px`;
       }
       if (activityRef.current) {
         activityRef.current.style.left = `${creature.position.x}px`;
-        activityRef.current.style.top = `${creature.position.y + Math.min(width, height) * 0.18}px`;
+        activityRef.current.style.top = `${Math.min((controlsRef.current?.offsetTop ?? height) - 20, creature.position.y + Math.min(width, height) * 0.18)}px`;
       }
 
       creature.draw(
@@ -429,6 +569,16 @@ export default function LumenExperience() {
         developmentRef.current,
         handRef.current,
       );
+      if (handRef.current.present) {
+        const tip = handRef.current.indexTip;
+        context.save();
+        context.strokeStyle = creature.sense().touching ? "#d8ffc0" : "rgba(184, 241, 219, .65)";
+        context.lineWidth = 1.4;
+        context.beginPath();
+        context.arc(tip.x * width, tip.y * height, creature.sense().touching ? 10 : 6, 0, Math.PI * 2);
+        context.stroke();
+        context.restore();
+      }
       animationFrame = requestAnimationFrame(render);
     };
 
@@ -437,7 +587,7 @@ export default function LumenExperience() {
       cancelAnimationFrame(animationFrame);
       window.removeEventListener("resize", resize);
     };
-  }, [remember]);
+  }, [announce, remember, updateCameraState]);
 
   useEffect(() => () => {
     if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
@@ -449,156 +599,129 @@ export default function LumenExperience() {
     microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
     vadSourceRef.current?.disconnect();
     vadAnalyserRef.current?.disconnect();
-    stopAudioSource(audioSourceRef);
-    audioRef.current?.pause();
-    window.speechSynthesis?.cancel();
-    void audioContextRef.current?.close();
+    turnRef.current?.abort();
+    cameraAttemptRef.current++;
+    microphoneAttemptRef.current++;
+    playerRef.current.close();
     trackerRef.current?.close();
     streamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
 
-  const handleVoiceTranscript = useCallback(async (transcript: string) => {
+  const handleVoiceTranscript = useCallback(async (transcript: string, turn: AbortController) => {
     const cleanTranscript = transcript.trim();
-    if (!cleanTranscript) return;
-
+    if (!cleanTranscript || turn.signal.aborted) return;
     updateVoiceState("processing");
-    const fallback = createConversationReply(
-      cleanTranscript,
-      personalityRef.current,
-      personalityRef.current.interactionCount,
-    );
     setLastTranscript(cleanTranscript);
-    announce("Lumen is thinking…", 2600, true);
-    let response: ConversationReply = fallback;
-    let source: ReplySource = "local";
-
-    try {
-      const apiResponse = await fetch("/api/lumen/converse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          transcript: cleanTranscript,
-          language: voiceLanguage,
-          personality: personalityRef.current,
-          development: developmentRef.current,
-          activity,
-          history: conversationHistoryRef.current,
-        }),
-      });
-      if (!apiResponse.ok) throw new Error("Bailian response unavailable");
-      const result = await apiResponse.json() as BailianConversationResponse;
-      if (!result.text?.trim()) throw new Error("Bailian returned no reply");
-      response = {
-        ...fallback,
-        text: result.text.trim(),
-        tone: isVoiceTone(result.tone) ? result.tone : fallback.tone,
-      };
-      source = "bailian";
-    } catch (error) {
-      console.warn("Lumen used its local voice memory", error);
-    }
-
+    clearSpeech();
+    const result = await requestJson<BailianConversationResponse>("/api/lumen/converse", {
+      transcript: cleanTranscript,
+      language: voiceLanguage,
+      personality: personalityRef.current,
+      development: developmentRef.current,
+      activity: creatureRef.current.activity,
+      history: conversationHistoryRef.current,
+      gestures: recentGestureContext(gestureHistoryRef.current, performance.now()),
+    }, turn.signal);
+    turn.signal.throwIfAborted();
+    if (!result.text?.trim()) throw new Error("Empty response");
+    const response = {
+      ...createConversationReply(cleanTranscript, personalityRef.current, personalityRef.current.interactionCount),
+      text: result.text.trim(),
+      tone: isVoiceTone(result.tone) ? result.tone : "neutral" as VoiceTone,
+    };
     conversationHistoryRef.current = [
       ...conversationHistoryRef.current,
-      { role: "user", content: cleanTranscript },
-      { role: "assistant", content: response.text },
+      { role: "user" as const, content: cleanTranscript },
+      { role: "assistant" as const, content: response.text },
     ].slice(-16);
     saveConversationHistory(conversationHistoryRef.current);
-    setReplySource(source);
     creatureRef.current.hear(response.tone, performance.now());
     rememberVoice(response);
-    speak(response.text, readingDuration(response.text), true);
+    speak(response.text);
     updateVoiceState("speaking");
-    const spoken = await requestLumenVoice(
-      audioRef,
-      audioContextRef,
-      audioSourceRef,
-      response.text,
-      voiceLanguage,
-      conversationVoiceRef.current,
-    );
-    if (!spoken) announce("The cloud voice could not surface this turn.", 4200, true);
-    if (conversationActiveRef.current) {
-      window.setTimeout(() => {
-        if (conversationActiveRef.current) updateVoiceState("listening");
-      }, 420);
-    } else {
-      updateVoiceState("idle");
-    }
-  }, [activity, announce, rememberVoice, speak, updateVoiceState, voiceLanguage]);
+    const spoken = await playerRef.current.speak(response.text, voiceLanguage, conversationVoiceRef.current, turn.signal);
+    turn.signal.throwIfAborted();
+    if (!spoken) announce(voiceLanguage === "zh-CN" ? "语音连接暂停了，你可以继续阅读这段回复。" : "The voice connection paused. You can still read the reply.", 5000, true);
+  }, [announce, clearSpeech, rememberVoice, speak, updateVoiceState, voiceLanguage]);
 
   const transcribeRecording = useCallback(async (blob: Blob) => {
-    if (blob.size < 400) {
-      updateVoiceState(conversationActiveRef.current ? "listening" : "idle");
-      return;
-    }
-    if (blob.size > MAX_RECORDING_BYTES) {
-      updateVoiceState("error");
-      announce("That sound was too long for Lumen to hold.", 4200, true);
-      return;
-    }
-
-    updateVoiceState("transcribing");
-    announce("Lumen is holding the shape of your voice…", 3400, true);
+    if (!conversationActiveRef.current) return;
+    if (blob.size < 400) { updateVoiceState("listening"); return; }
+    const turn = beginTurnRequest();
     try {
+      if (blob.size > MAX_RECORDING_BYTES) throw new Error("Recording too large");
+      updateVoiceState("transcribing");
       const audio = await blobToDataUrl(blob);
-      const response = await fetch("/api/lumen/transcribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audio, language: voiceLanguage }),
-      });
-      const result = await response.json() as BailianTranscriptionResponse & { error?: string };
-      if (!response.ok) throw new Error(result.error || `Bailian transcription failed (${response.status})`);
-      if (!result.transcript?.trim()) throw new Error("Bailian returned no transcript");
-      await handleVoiceTranscript(result.transcript);
+      turn.signal.throwIfAborted();
+      const result = await requestJson<BailianTranscriptionResponse>("/api/lumen/transcribe", {
+        audio, language: voiceLanguage,
+      }, turn.signal);
+      turn.signal.throwIfAborted();
+      if (!result.transcript?.trim()) throw new Error("No transcript");
+      await handleVoiceTranscript(result.transcript, turn);
     } catch (error) {
-      console.warn("Lumen could not transcribe the recording", {
-        error,
-        mimeType: blob.type,
-        bytes: blob.size,
-      });
-      updateVoiceState("error");
-      announce(
-        error instanceof Error && /no available balance/i.test(error.message)
-          ? voiceLanguage === "zh-CN"
-            ? "百炼账户目前没有可用额度，请检查阿里云的费用与成本。"
-            : "Bailian has no available balance. Check the Alibaba Cloud billing account."
-          : error instanceof Error && /No usable recording/i.test(error.message)
-            ? "Lumen received the recording, but could not read its audio format."
-            : "Lumen received your voice, but could not recognize it this time.",
-        5200,
-        true,
-      );
-      if (conversationActiveRef.current) {
-        window.setTimeout(() => {
-          if (conversationActiveRef.current) updateVoiceState("listening");
-        }, 900);
+      if (turn.signal.aborted) return;
+      console.warn("Voice turn failed", { error, mimeType: blob.type, bytes: blob.size });
+      announce(requestErrorMessage(error, voiceLanguage === "zh-CN"), 6500, true);
+      if (error instanceof LumenRequestError && [402, 503].includes(error.status)) {
+        conversationActiveRef.current = false;
+        setConversationActive(false);
+        microphoneStreamRef.current?.getTracks().forEach(track => track.stop());
+        microphoneStreamRef.current = null;
+        if (vadFrameRef.current !== null) cancelAnimationFrame(vadFrameRef.current);
+        vadSourceRef.current?.disconnect();
+        vadAnalyserRef.current?.disconnect();
+      }
+    } finally {
+      if (turnRef.current === turn) {
+        // Let the speaker's final tail fade before listening again.
+        recordingTimeoutRef.current = window.setTimeout(() => {
+          if (turnRef.current !== turn || turn.signal.aborted) return;
+          turnRef.current = null;
+          updateVoiceState(conversationActiveRef.current ? "listening" : "idle");
+        }, 700);
       }
     }
-  }, [announce, handleVoiceTranscript, updateVoiceState, voiceLanguage]);
+  }, [announce, beginTurnRequest, handleVoiceTranscript, updateVoiceState, voiceLanguage]);
 
   const stopConversation = useCallback((showStatus = true) => {
+    microphoneAttemptRef.current++;
     conversationActiveRef.current = false;
     setConversationActive(false);
+    cancelTurn();
     if (vadFrameRef.current !== null) window.cancelAnimationFrame(vadFrameRef.current);
     vadFrameRef.current = null;
     if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
     recordingTimeoutRef.current = null;
-    if (recorderRef.current?.state === "recording") {
-      recorderRef.current.onstop = null;
-      recorderRef.current.stop();
+    const recorder = recorderRef.current;
+    if (recorder) {
+      recorder.onstop = null;
+      recorder.ondataavailable = null;
+      recorder.onerror = null;
+      if (recorder.state !== "inactive") recorder.stop();
     }
     recorderRef.current = null;
-    microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+    microphoneStreamRef.current?.getTracks().forEach(track => track.stop());
     microphoneStreamRef.current = null;
     vadSourceRef.current?.disconnect();
     vadSourceRef.current = null;
     vadAnalyserRef.current?.disconnect();
     vadAnalyserRef.current = null;
-    stopAudioSource(audioSourceRef);
     updateVoiceState("idle");
-    if (showStatus) announce("Conversation closed.", 2600, true);
-  }, [announce, updateVoiceState]);
+    if (showStatus) announce("Conversation closed.", 3200, true);
+  }, [announce, cancelTurn, updateVoiceState]);
+
+  useEffect(() => {
+    const pause = () => {
+      if (document.hidden) {
+        stopConversation(false);
+        gestureVoiceEnabledRef.current = false;
+        setGestureVoiceEnabled(false);
+      }
+    };
+    document.addEventListener("visibilitychange", pause);
+    return () => document.removeEventListener("visibilitychange", pause);
+  }, [stopConversation]);
 
   const startConversation = useCallback(async () => {
     if (!("MediaRecorder" in window) || !navigator.mediaDevices?.getUserMedia) {
@@ -607,14 +730,17 @@ export default function LumenExperience() {
       return;
     }
 
+    const attempt = ++microphoneAttemptRef.current;
+    const turn = beginTurnRequest();
+    conversationActiveRef.current = true;
+    setConversationActive(true);
     try {
       // Lock one cloud timbre for the full conversation. The selector remains
       // disabled until the visit closes, so retries cannot drift to a new voice.
       conversationVoiceRef.current = selectedVoice;
       updateVoiceState("processing");
-      const audioContext = audioContextRef.current ?? new AudioContext();
-      audioContextRef.current = audioContext;
-      if (audioContext.state !== "running") await audioContext.resume();
+      const audioContext = await playerRef.current.unlock();
+      turn.signal.throwIfAborted();
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           ...(selectedMicrophoneId ? { deviceId: { exact: selectedMicrophoneId } } : {}),
@@ -625,8 +751,17 @@ export default function LumenExperience() {
         },
         video: false,
       });
+      if (attempt !== microphoneAttemptRef.current || turn.signal.aborted) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       microphoneStreamRef.current = stream;
-      await refreshMicrophones();
+      stream.getAudioTracks()[0]?.addEventListener("ended", () => {
+        if (attempt !== microphoneAttemptRef.current) return;
+        stopConversation(false);
+        announce("Microphone disconnected. Choose a microphone and reconnect.", 6000, true);
+      }, { once: true });
+      void refreshMicrophones();
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 1024;
@@ -641,8 +776,10 @@ export default function LumenExperience() {
       let speechFrames = 0;
       let recordingStartedAt = 0;
       let lastVoiceAt = 0;
+      let noiseFloor = 0.006;
 
       const beginTurn = (now: number) => {
+        try {
         const mimeType = preferredRecordingMimeType();
         const recorder = mimeType
           ? new MediaRecorder(stream, { mimeType })
@@ -656,15 +793,26 @@ export default function LumenExperience() {
         };
         recorder.onstop = () => {
           recorderRef.current = null;
-          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          if (attempt !== microphoneAttemptRef.current || !conversationActiveRef.current) return;
+          const blob = new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type || "audio/webm" });
           void transcribeRecording(blob);
         };
-        recorder.start(200);
+        recorder.onerror = () => {
+          if (attempt !== microphoneAttemptRef.current) return;
+          stopConversation(false);
+          announce("Recording stopped. Please reconnect your microphone.", 6000, true);
+        };
+        recorder.start();
+        clearSpeech();
         updateVoiceState("recording");
+        } catch {
+          stopConversation(false);
+          announce("This microphone could not start recording. Try another input.", 6000, true);
+        }
       };
 
       const monitorVoice = (now: number) => {
-        if (!conversationActiveRef.current) return;
+        if (!conversationActiveRef.current || attempt !== microphoneAttemptRef.current) return;
         const state = voiceStateRef.current;
         if (state === "listening" || state === "recording") {
           analyser.getByteTimeDomainData(samples);
@@ -674,52 +822,56 @@ export default function LumenExperience() {
             sum += normalized * normalized;
           }
           const level = Math.sqrt(sum / samples.length);
+          if (state === "listening" && level < VOICE_START_LEVEL) noiseFloor += (level - noiseFloor) * 0.04;
+          const startLevel = Math.max(0.015, Math.min(VOICE_START_LEVEL, noiseFloor * 2.8));
+          const endLevel = Math.max(0.009, Math.min(VOICE_END_LEVEL, noiseFloor * 1.8));
+          if (level >= startLevel) lastUserSoundRef.current = now;
           const recorder = recorderRef.current;
           if (recorder?.state === "recording") {
-            if (level >= VOICE_END_LEVEL) lastVoiceAt = now;
+            if (level >= endLevel) lastVoiceAt = now;
             const longEnough = now - recordingStartedAt > VOICE_MIN_TURN_MS;
             const finished = longEnough && now - lastVoiceAt > VOICE_END_SILENCE_MS;
-            if (finished || now - recordingStartedAt >= MAX_RECORDING_MS) recorder.stop();
+            if (finished || now - recordingStartedAt >= MAX_RECORDING_MS) {
+              updateVoiceState("transcribing");
+              recorder.stop();
+            }
           } else if (state === "listening") {
-            speechFrames = level >= VOICE_START_LEVEL ? speechFrames + 1 : 0;
+            speechFrames = level >= startLevel ? speechFrames + 1 : 0;
             if (speechFrames >= 3) {
               speechFrames = 0;
               beginTurn(now);
             }
           }
         }
-        vadFrameRef.current = window.requestAnimationFrame(monitorVoice);
+        if (conversationActiveRef.current) vadFrameRef.current = window.requestAnimationFrame(monitorVoice);
       };
       vadFrameRef.current = window.requestAnimationFrame(monitorVoice);
 
       if (!greetedRef.current) {
         greetedRef.current = true;
-        const returning = personalityRef.current.familiarity >= 5;
+        const returning = conversationHistoryRef.current.length > 0 || personalityRef.current.familiarity >= 5;
         const greeting = voiceLanguage === "zh-CN"
-          ? returning ? "嘿，你回来了。" : "这是我第一次见到你。你好。"
-          : returning ? "Hey, you're back." : "This is the first time I have seen you. Hello.";
-        speak(greeting, readingDuration(greeting), true);
+          ? returning ? "嘿，你回来了。" : "你好。我是 Lumen。"
+          : returning ? "Hey, you're back." : "Hello. I’m Lumen.";
+        speak(greeting);
         creatureRef.current.hear("warm", performance.now());
         updateVoiceState("speaking");
-        const spoken = await requestLumenVoice(
-          audioRef,
-          audioContextRef,
-          audioSourceRef,
-          greeting,
-          voiceLanguage,
-          conversationVoiceRef.current,
-        );
+        const spoken = await playerRef.current.speak(greeting, voiceLanguage, conversationVoiceRef.current, turn.signal);
+        turn.signal.throwIfAborted();
         if (!spoken) announce("The cloud voice could not surface this turn.", 4200, true);
       }
+      if (turn.signal.aborted || attempt !== microphoneAttemptRef.current) return;
+      turnRef.current = null;
       if (conversationActiveRef.current) updateVoiceState("listening");
       announce("Conversation open · speak naturally.", 3400, true);
     } catch (error) {
+      if (turn.signal.aborted || attempt !== microphoneAttemptRef.current) return;
       console.warn("Lumen could not start recording", error);
       stopConversation(false);
       updateVoiceState("error");
       announce("Choose a microphone and allow Lumen to hear it.", 4400, true);
     }
-  }, [announce, refreshMicrophones, selectedMicrophoneId, selectedVoice, speak, stopConversation, transcribeRecording, updateVoiceState, voiceLanguage]);
+  }, [announce, beginTurnRequest, clearSpeech, refreshMicrophones, selectedMicrophoneId, selectedVoice, speak, stopConversation, transcribeRecording, updateVoiceState, voiceLanguage]);
 
   const toggleConversation = useCallback(() => {
     if (conversationActiveRef.current) stopConversation();
@@ -731,6 +883,8 @@ export default function LumenExperience() {
     updateCameraState("loading");
     announce("Opening camera…", 2400, true);
 
+    const attempt = ++cameraAttemptRef.current;
+    let pendingTracker: HandTracker | null = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -740,6 +894,7 @@ export default function LumenExperience() {
         },
         audio: false,
       });
+      if (attempt !== cameraAttemptRef.current) { stream.getTracks().forEach(track => track.stop()); return; }
       streamRef.current = stream;
 
       const video = videoRef.current;
@@ -748,12 +903,16 @@ export default function LumenExperience() {
       await video.play();
 
       const tracker = new HandTracker();
+      pendingTracker = tracker;
       await tracker.initialize();
+      if (attempt !== cameraAttemptRef.current) { tracker.close(); return; }
       trackerRef.current = tracker;
       updateCameraState("active");
-      await refreshMicrophones(true);
+      void refreshMicrophones(true);
       announce("Choose a microphone, then begin conversation.", 3600);
     } catch (error) {
+      pendingTracker?.close();
+      if (attempt !== cameraAttemptRef.current) return;
       console.error("Lumen could not start hand tracking", error);
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -763,17 +922,19 @@ export default function LumenExperience() {
   };
 
   const stopCamera = () => {
+    cameraAttemptRef.current++;
     stopConversation(false);
-    audioRef.current?.pause();
-    audioRef.current = null;
-    stopAudioSource(audioSourceRef);
-    window.speechSynthesis?.cancel();
+    gestureVoiceEnabledRef.current = false;
+    setGestureVoiceEnabled(false);
     trackerRef.current?.close();
     trackerRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     handRef.current = EMPTY_HAND;
+    gestureInterpreterRef.current.reset();
+    gestureHistoryRef.current = [];
+    gestureReactionBusyRef.current = false;
     setHandPresent(false);
     greetedRef.current = false;
     setLastTranscript("");
@@ -801,6 +962,7 @@ export default function LumenExperience() {
         className={`hand-preview ${cameraState === "active" ? "is-visible" : ""} ${previewVisible ? "" : "is-collapsed"}`}
         aria-label="Live hand tracking preview"
         aria-hidden={cameraState !== "active"}
+        inert={cameraState !== "active"}
       >
         <button
           className="preview-toggle"
@@ -815,7 +977,7 @@ export default function LumenExperience() {
           <canvas ref={handCanvasRef} className="tracking-overlay" aria-hidden="true" />
           <div className="preview-caption">
             <span className={`preview-signal ${handPresent ? "has-hand" : ""}`} />
-            <span>{handPresent ? "hand acquired" : "seeking hand"}</span>
+            <span>{handPresent ? "hand visible" : "show one hand"}</span>
           </div>
         </div>
       </aside>
@@ -835,17 +997,17 @@ export default function LumenExperience() {
         </span>
       </div>
 
-      <section className="invitation" aria-label="Hand interaction controls">
+      <section ref={controlsRef} className="invitation" aria-label="Hand interaction controls">
         <p className="message" key={message}>{message}</p>
         <p className={`conversation-transcript ${lastTranscript ? "is-visible" : ""}`} aria-live="polite">
           <span>you</span>{lastTranscript}
         </p>
-        {cameraState !== "active" ? (
+        {cameraState !== "active" && (
           <button className="meet-button" onClick={startCamera} disabled={cameraState === "loading"}>
             <span>{cameraState === "loading" ? "Waking Lumen" : cameraState === "error" ? "Try again" : "Let Lumen see you"}</span>
             <span className="button-arrow" aria-hidden="true">↗</span>
           </button>
-        ) : (
+        )}
           <div className="visit-controls">
             <div className="voice-control">
               <button
@@ -860,9 +1022,7 @@ export default function LumenExperience() {
                 <span>{conversationActive ? "end conversation" : "begin conversation"}</span>
               </button>
               <span className="voice-status" aria-live="polite">
-                {replySource === "local" && voiceState === "speaking"
-                  ? "local response"
-                  : VOICE_STATE_COPY[voiceState]}
+                {VOICE_STATE_COPY[voiceState]}
               </span>
               <button
                 className="voice-language"
@@ -879,13 +1039,13 @@ export default function LumenExperience() {
                 onChange={(event) => {
                   const deviceId = event.target.value;
                   setSelectedMicrophoneId(deviceId);
-                  window.localStorage.setItem(MICROPHONE_STORAGE_KEY, deviceId);
+                  writeMemory(MICROPHONE_STORAGE_KEY, deviceId);
                 }}
                 disabled={conversationActive || (voiceState !== "idle" && voiceState !== "error")}
                 aria-label="Microphone used to speak to Lumen"
                 title="Microphone used to speak to Lumen"
               >
-                {audioInputs.length === 0 ? <option value="">system microphone</option> : null}
+                <option value="">system microphone</option>
                 {audioInputs.map((device) => (
                   <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
                 ))}
@@ -896,7 +1056,7 @@ export default function LumenExperience() {
                 onChange={(event) => {
                   const voice = event.target.value as LumenVoice;
                   setSelectedVoice(voice);
-                  window.localStorage.setItem(VOICE_STORAGE_KEY, voice);
+                  writeMemory(VOICE_STORAGE_KEY, voice);
                 }}
                 disabled={conversationActive || voiceState === "processing" || voiceState === "speaking"}
                 aria-label="Lumen voice"
@@ -906,15 +1066,35 @@ export default function LumenExperience() {
                 <option value="Andre">Andre · steady</option>
                 <option value="Neil">Neil · precise</option>
               </select>
+              <button
+                type="button"
+                className="gesture-voice-button"
+                disabled={cameraState !== "active"}
+                aria-pressed={gestureVoiceEnabled}
+                onClick={async () => {
+                  if (gestureVoiceEnabledRef.current) {
+                    gestureVoiceEnabledRef.current = false;
+                    setGestureVoiceEnabled(false);
+                    if (gestureReactionBusyRef.current) { cancelTurn(); updateVoiceState(conversationActiveRef.current ? "listening" : "idle"); }
+                    return;
+                  }
+                  try {
+                    await playerRef.current.unlock();
+                    gestureVoiceEnabledRef.current = true;
+                    setGestureVoiceEnabled(true);
+                  } catch { announce("Sound could not start. Please try again.", 4000, true); }
+                }}
+              >{gestureVoiceEnabled ? "hand voice on" : "hand voice off"}</button>
             </div>
-            <button className="quiet-button" onClick={stopCamera} aria-label="Turn off camera">
-              end visit
-            </button>
+            {cameraState === "active" || cameraState === "loading" ? (
+              <button className="quiet-button" onClick={stopCamera} aria-label="Turn off camera">
+                {cameraState === "loading" ? "cancel camera" : "end visit"}
+              </button>
+            ) : null}
           </div>
-        )}
       </section>
 
-      <aside className="memory" title="Lumen’s memory of you">
+      <aside className="memory" title="Bond grows through calm contact and conversation; memory is saved in this browser.">
         <span>bond</span>
         <span className="memory-line"><i style={{ width: `${personality.trust}%` }} /></span>
       </aside>
@@ -931,39 +1111,37 @@ export default function LumenExperience() {
         </button>
         <div className="dream-entry" aria-hidden={!dreamOpen}>
           <time>{dreamDay}</time>
-          <p>{dreamText || "The dream has not surfaced yet."}</p>
+          <p>{dreamText || (dreamError ? "The dream could not surface. Close and reopen the journal while Lumen sleeps to try again." : dreamLoading ? "A dream is taking shape…" : "No dream here yet. Lumen leaves one after sleeping in this space.")}</p>
         </div>
       </aside>
 
-      <p className="privacy">Camera stays on this device · short voice clips go to Bailian</p>
+      <p className="privacy">Camera stays on this device · voice clips &amp; gesture summaries go to Bailian</p>
 
-      {guideOpen ? (
-        <div className="guide-backdrop" role="presentation">
-          <section className="guide-card" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+      <dialog ref={guideRef} tabIndex={-1} className="guide-backdrop" aria-labelledby="guide-title" onCancel={closeGuide}>
+          <section className="guide-card">
             <p className="guide-kicker">a life forming in digital water</p>
             <h1 id="guide-title">Meet Lumen</h1>
             <p className="guide-intro">
-              Lumen is a fluid artificial organism rather than a cartoon animal. Its membrane and inner light remember how you spend time together.
+              Lumen is a fluid artificial organism rather than a cartoon animal. Its membrane and inner light change as you spend time together. Memory belongs to this browser.
             </p>
             <div className="guide-grid">
               <article>
                 <span>01 · talk</span>
-                <p>Open the camera, choose a microphone, and begin conversation once. Speak naturally; pauses become turns.</p>
+                <p>Choose a microphone and begin conversation once. Speak naturally, then pause for a reply. The camera is optional for talking.</p>
               </article>
               <article>
                 <span>02 · reach</span>
-                <p>Move one hand slowly. Its membrane notices your approach. Gentle contact creates a local wave; sudden movement makes it contract.</p>
+                <p>Move one hand slowly. Its membrane notices your approach. Bring your fingertip to its membrane and move gently. Turn on hand voice for occasional spoken reactions; otherwise, watch its body respond.</p>
               </article>
               <article>
                 <span>03 · return</span>
                 <p>Conversation, calm contact, and visits on different days slowly grow Lumen. Different relationships produce different bodies.</p>
               </article>
             </div>
-            <p className="guide-note">Its latest dream remains in the dream journal, even after it wakes.</p>
-            <button className="guide-enter" type="button" onClick={() => setGuideOpen(false)}>enter Lumen’s world</button>
+            <p className="guide-note">Its latest dream stays here after it wakes. Camera images stay on this device; voice clips and gesture summaries go to Bailian.</p>
+            <button className="guide-enter" type="button" onClick={closeGuide}>enter Lumen’s world</button>
           </section>
-        </div>
-      ) : null}
+      </dialog>
     </main>
   );
 }
@@ -992,7 +1170,7 @@ function localDayKey(date: Date) {
 
 function loadConversationHistory(): ConversationHistoryEntry[] {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(CONVERSATION_STORAGE_KEY) ?? "[]");
+    const stored = JSON.parse(readMemory(CONVERSATION_STORAGE_KEY) ?? "[]");
     if (!Array.isArray(stored)) return [];
     return stored.slice(-16).flatMap((entry) => {
       if (!entry || typeof entry !== "object") return [];
@@ -1007,159 +1185,11 @@ function loadConversationHistory(): ConversationHistoryEntry[] {
 }
 
 function saveConversationHistory(history: ConversationHistoryEntry[]) {
-  window.localStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(history.slice(-16)));
-}
-
-function readingDuration(text: string) {
-  return Math.max(5000, Math.min(8200, 4100 + text.length * 75));
+  writeMemory(CONVERSATION_STORAGE_KEY, JSON.stringify(history.slice(-16)));
 }
 
 function isVoiceTone(value: unknown): value is VoiceTone {
   return value === "warm" || value === "curious" || value === "uneasy" || value === "neutral";
-}
-
-async function requestLumenVoice(
-  audioRef: React.MutableRefObject<HTMLAudioElement | null>,
-  audioContextRef: React.MutableRefObject<AudioContext | null>,
-  audioSourceRef: React.MutableRefObject<AudioBufferSourceNode | null>,
-  text: string,
-  language: VoiceLanguage,
-  voice: LumenVoice,
-) {
-  audioRef.current?.pause();
-  window.speechSynthesis?.cancel();
-  const audioContext = audioContextRef.current;
-  if (!audioContext) return false;
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let beganPlaying = false;
-    try {
-      const response = await fetch("/api/lumen/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, language, voice }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) throw new Error("Bailian speech unavailable");
-      await playBailianSpeechStream(response, audioContext, audioSourceRef, () => {
-        beganPlaying = true;
-      });
-      return true;
-    } catch (error) {
-      console.warn(`Lumen cloud speech attempt ${attempt + 1} failed`, error);
-      // Never replay the beginning of a sentence after a partial stream.
-      if (beganPlaying) return false;
-    }
-  }
-  return false;
-}
-
-async function playBailianSpeechStream(
-  response: Response,
-  audioContext: AudioContext,
-  audioSourceRef: React.MutableRefObject<AudioBufferSourceNode | null>,
-  onPlaybackStart: () => void,
-) {
-  if (!response.body) throw new Error("Bailian returned no speech stream");
-  if (audioContext.state !== "running") await audioContext.resume();
-  stopAudioSource(audioSourceRef);
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let pending = "";
-  let nextStartAt = audioContext.currentTime + 0.045;
-  let chunksPlayed = 0;
-  let lastPlayback: Promise<void> = Promise.resolve();
-
-  const consumeEvent = (event: string) => {
-    const data = event
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim())
-      .join("");
-    if (!data || data === "[DONE]") return;
-    const payload = JSON.parse(data) as {
-      code?: string;
-      message?: string;
-      output?: { audio?: { data?: string } };
-    };
-    if (payload.code) throw new Error(payload.message || payload.code);
-    const encoded = payload.output?.audio?.data;
-    if (!encoded) return;
-
-    const pcm = decodePcm16(encoded);
-    if (!pcm.length) return;
-    const buffer = audioContext.createBuffer(1, pcm.length, 24_000);
-    buffer.copyToChannel(pcm, 0);
-    const source = audioContext.createBufferSource();
-    const gain = audioContext.createGain();
-    source.buffer = buffer;
-    source.connect(gain);
-    gain.connect(audioContext.destination);
-    const startAt = Math.max(nextStartAt, audioContext.currentTime + 0.025);
-    nextStartAt = startAt + buffer.duration;
-    const isFirstChunk = chunksPlayed === 0;
-    if (isFirstChunk) {
-      // Streaming PCM can begin on a non-zero waveform sample. Jumping from
-      // digital silence directly to that value creates the audible click.
-      gain.gain.setValueAtTime(0, startAt);
-      gain.gain.linearRampToValueAtTime(0.78, startAt + Math.min(0.018, buffer.duration * 0.35));
-    } else {
-      gain.gain.setValueAtTime(0.78, startAt);
-    }
-    audioSourceRef.current = source;
-    chunksPlayed += 1;
-    if (chunksPlayed === 1) onPlaybackStart();
-    lastPlayback = new Promise<void>((resolve) => {
-      source.onended = () => {
-        if (audioSourceRef.current === source) audioSourceRef.current = null;
-        resolve();
-      };
-    });
-    source.start(startAt);
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    pending += decoder.decode(value, { stream: !done });
-    const events = pending.split(/\r?\n\r?\n/);
-    pending = events.pop() ?? "";
-    for (const event of events) consumeEvent(event);
-    if (done) break;
-  }
-  if (pending.trim()) consumeEvent(pending);
-  if (!chunksPlayed) throw new Error("Bailian returned no playable speech chunks");
-  await lastPlayback;
-}
-
-function decodePcm16(encoded: string) {
-  const binary = window.atob(encoded);
-  let byteOffset = 0;
-  // Bailian documents streamed chunks as raw PCM. If a compatible endpoint
-  // ever prefixes the first chunk with a WAV container, skip its header rather
-  // than interpreting the ASCII RIFF bytes as a burst of audio.
-  if (binary.slice(0, 4) === "RIFF") {
-    const dataMarker = binary.indexOf("data", 12);
-    if (dataMarker >= 0) byteOffset = dataMarker + 8;
-  }
-  const sampleCount = Math.floor((binary.length - byteOffset) / 2);
-  const samples = new Float32Array(sampleCount);
-  for (let index = 0; index < sampleCount; index += 1) {
-    const low = binary.charCodeAt(byteOffset + index * 2);
-    const high = binary.charCodeAt(byteOffset + index * 2 + 1);
-    const signed = (high << 8 | low) << 16 >> 16;
-    samples[index] = signed / 32768;
-  }
-  return samples;
-}
-
-function stopAudioSource(audioSourceRef: React.MutableRefObject<AudioBufferSourceNode | null>) {
-  try {
-    audioSourceRef.current?.stop();
-  } catch {
-    // A source that has already ended cannot be stopped twice.
-  }
-  audioSourceRef.current = null;
 }
 
 function preferredRecordingMimeType() {
@@ -1178,116 +1208,24 @@ function blobToDataUrl(blob: Blob) {
   });
 }
 
-type MessageEntry = { text: string; duration: number };
-
-function useMessageQueue(initialMessage: string) {
-  const [message, setMessage] = useState(initialMessage);
-  const engineRef = useRef<{
-    current: string;
-    queue: MessageEntry[];
-    timer: number | null;
-    initialHold: boolean;
-  }>({
-    current: initialMessage,
-    queue: [],
-    timer: null,
-    initialHold: true,
-  });
-
-  const announce = useCallback((text: string, duration = 3200, priority = false) => {
-    const engine = engineRef.current;
-    if (engine.current === text || engine.queue.some((entry) => entry.text === text)) return;
-
-    const entry = { text, duration };
-    if (priority) engine.queue.unshift(entry);
-    else if (engine.queue.length < 5) engine.queue.push(entry);
-    if (engine.queue.length > 5) engine.queue.length = 5;
-
-    const playNext = () => {
-      const next = engine.queue.shift();
-      if (!next) {
-        engine.current = "";
-        engine.timer = null;
-        return;
-      }
-      engine.current = next.text;
-      setMessage(next.text);
-      engine.timer = window.setTimeout(() => {
-        engine.timer = null;
-        playNext();
-      }, next.duration);
-    };
-
-    if (engine.initialHold) {
-      engine.initialHold = false;
-      engine.timer = window.setTimeout(() => {
-        engine.timer = null;
-        playNext();
-      }, 2600);
-    } else if (engine.timer === null) {
-      playNext();
-    }
+function useMessageQueue(initial: string) {
+  const [message, setMessage] = useState(initial);
+  const timer = useRef<number | null>(null);
+  const announce = useCallback((text: string, duration = 5000, _priority = false) => {
+    void _priority;
+    if (timer.current !== null) clearTimeout(timer.current);
+    setMessage(text);
+    timer.current = window.setTimeout(() => { setMessage(""); timer.current = null; }, Math.max(4500, duration));
   }, []);
-
-  useEffect(() => () => {
-    if (engineRef.current.timer !== null) window.clearTimeout(engineRef.current.timer);
-  }, []);
-
+  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
   return [message, announce] as const;
 }
 
 function useLumenSpeech() {
   const [speech, setSpeech] = useState<string | null>(null);
-  const engineRef = useRef<{
-    current: string | null;
-    queue: MessageEntry[];
-    recent: string[];
-    timer: number | null;
-  }>({ current: null, queue: [], recent: [], timer: null });
-
-  const speak = useCallback((text: string, duration = 4600, priority = false) => {
-    const engine = engineRef.current;
-    if (
-      engine.current === text ||
-      engine.queue.some((entry) => entry.text === text) ||
-      engine.recent.includes(text)
-    ) return;
-
-    const entry = { text, duration };
-    if (priority) engine.queue.unshift(entry);
-    else engine.queue.push(entry);
-    if (engine.queue.length > 3) engine.queue.length = 3;
-
-    const playNext = () => {
-      const next = engine.queue.shift();
-      if (!next) {
-        engine.current = null;
-        engine.timer = null;
-        return;
-      }
-
-      engine.current = next.text;
-      engine.recent.push(next.text);
-      if (engine.recent.length > 6) engine.recent.shift();
-      setSpeech(next.text);
-      engine.timer = window.setTimeout(() => {
-        setSpeech(null);
-        engine.current = null;
-        engine.timer = window.setTimeout(() => {
-          engine.timer = null;
-          playNext();
-        }, 900);
-      }, next.duration);
-    };
-
-    if (engine.timer === null && engine.current === null) playNext();
-  }, []);
-
-  useEffect(() => () => {
-    if (engineRef.current.timer !== null) window.clearTimeout(engineRef.current.timer);
-  }, []);
-
-  return [speech, speak] as const;
+  const speak = useCallback((text: string) => setSpeech(text), []);
+  const clearSpeech = useCallback(() => setSpeech(null), []);
+  return [speech, speak, clearSpeech] as const;
 }
 
 const HAND_CONNECTIONS = [

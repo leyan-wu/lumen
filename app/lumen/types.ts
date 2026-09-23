@@ -1,3 +1,4 @@
+import { readMemory, writeMemory } from "./storage";
 export type Vec2 = { x: number; y: number };
 
 export type Mood = "idle" | "newborn" | "curious" | "happy" | "scared" | "lonely";
@@ -35,7 +36,7 @@ export function loadPersonality(): Personality {
   if (typeof window === "undefined") return DEFAULT_PERSONALITY;
 
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
+    const saved = JSON.parse(readMemory(STORAGE_KEY) ?? "null");
     if (!saved || typeof saved !== "object") return DEFAULT_PERSONALITY;
 
     const interactionCount = Math.max(0, Number(saved.interactionCount) || 0);
@@ -53,7 +54,7 @@ export function loadPersonality(): Personality {
 }
 
 export function savePersonality(personality: Personality) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(personality));
+  writeMemory(STORAGE_KEY, JSON.stringify(personality));
 }
 
 function clampNumber(value: unknown, fallback: number) {

@@ -7,6 +7,9 @@ type ConversationBody = {
   development?: unknown;
   history?: unknown;
   activity?: unknown;
+  gestures?: unknown;
+  interactionOnly?: unknown;
+  recentReactions?: unknown;
 };
 
 type TranscriptionBody = {
@@ -45,6 +48,13 @@ type DevelopmentSnapshot = {
 type HistoryEntry = { role: "user" | "assistant"; content: string };
 type LifeActivity = "dreaming" | "exploring" | "feeding" | "playing";
 type LumenVoice = "Maia" | "Andre" | "Neil";
+type GestureKind = "approaching" | "gentle-touch" | "stroking" | "fast-movement" | "leaving";
+type GestureContext = {
+  kind: GestureKind;
+  durationMs: number;
+  intensity: number;
+  ageMs: number;
+};
 
 type RateLimit = { count: number; resetsAt: number };
 
@@ -61,12 +71,17 @@ export async function handleLumenConversation(request: Request, apiKey?: string)
   let body: ConversationBody;
   try {
     body = await request.json() as ConversationBody;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid body");
   } catch {
     return json({ error: "Invalid request" }, 400);
   }
 
   const transcript = cleanText(body.transcript, 280);
-  if (!transcript) return json({ error: "No speech was received." }, 400);
+  const gestures = cleanGestures(body.gestures);
+  const interactionOnly = body.interactionOnly === true;
+  if (!transcript && (!interactionOnly || gestures.length === 0)) {
+    return json({ error: "No speech or interaction was received." }, 400);
+  }
 
   const language = body.language === "zh-CN" ? "zh-CN" : "en-US";
   const personality = cleanPersonality(body.personality);
@@ -75,7 +90,19 @@ export async function handleLumenConversation(request: Request, apiKey?: string)
   const activity = cleanActivity(body.activity);
 
   try {
-    const generated = await generateReply(apiKey, transcript, language, personality, development, history, activity);
+    const generated = await generateReply(
+      apiKey,
+      transcript,
+      language,
+      personality,
+      development,
+      history,
+      activity,
+      gestures,
+      interactionOnly,
+      Array.isArray(body.recentReactions) ? body.recentReactions.slice(-6).map(item => cleanText(item, 180)).filter(Boolean) : [],
+      request.signal,
+    );
     return json({ ...generated, source: "bailian" });
   } catch (error) {
     console.error("Bailian conversation failed", safeError(error));
@@ -95,6 +122,7 @@ export async function handleLumenTranscription(request: Request, apiKey?: string
   let body: TranscriptionBody;
   try {
     body = await request.json() as TranscriptionBody;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid body");
   } catch {
     return json({ error: "Invalid request" }, 400);
   }
@@ -118,7 +146,7 @@ export async function handleLumenTranscription(request: Request, apiKey?: string
         }],
         asr_options: { language, enable_itn: true },
       }),
-      signal: AbortSignal.timeout(16_000),
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(16_000)]),
     });
     if (!response.ok) throw await apiResponseError("ASR", response);
     const payload = await response.json() as {
@@ -145,6 +173,7 @@ export async function handleLumenSpeech(request: Request, apiKey?: string) {
   let body: SpeechBody;
   try {
     body = await request.json() as SpeechBody;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid body");
   } catch {
     return json({ error: "Invalid request" }, 400);
   }
@@ -154,7 +183,7 @@ export async function handleLumenSpeech(request: Request, apiKey?: string) {
   const voice = cleanVoice(body.voice);
 
   try {
-    return await streamSynthesizeReply(apiKey, text, language, voice);
+    return await streamSynthesizeReply(apiKey, text, language, voice, request.signal);
   } catch (error) {
     console.error("Bailian speech synthesis failed", safeError(error));
     if (isArrearage(error)) {
@@ -173,6 +202,7 @@ export async function handleLumenDream(request: Request, apiKey?: string) {
   let body: DreamBody;
   try {
     body = await request.json() as DreamBody;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid body");
   } catch {
     return json({ error: "Invalid request" }, 400);
   }
@@ -228,10 +258,20 @@ async function generateReply(
   development: DevelopmentSnapshot,
   history: HistoryEntry[],
   activity: LifeActivity,
+  gestures: GestureContext[],
+  interactionOnly: boolean,
+  recentReactions: string[],
+  signal: AbortSignal,
 ) {
   const languageInstruction = language === "zh-CN"
     ? "Reply only in natural Simplified Chinese. Usually use 35 to 90 Chinese characters, but use less when a short answer is natural."
     : "Reply only in natural English. Usually use 18 to 55 words, but use less when a short answer is natural.";
+  const gestureContext = describeGestures(gestures);
+  const interactionInstruction = interactionOnly
+    ? language === "zh-CN"
+      ? "这是一次非语言的身体互动。只说一句自然的即时反应，通常 8 到 30 个汉字。不要提及摄像头、检测、手势标签或数值，也不要为了延长对话而提问。"
+      : "This is a nonverbal bodily interaction. Give one natural immediate reaction, usually 4 to 16 words. Do not mention cameras, detection, gesture labels, or numbers, and do not ask a question merely to prolong the exchange."
+    : "Use the sensed interaction context only when it is relevant to the visitor's words. Do not claim to see anything beyond the supplied events.";
   const system = `You are Lumen, a warm developing artificial lifeform with a fluid translucent membrane and luminous inner core in a dim aquatic world on the screen. You have no fixed animal species or cartoon anatomy.
 You are not an assistant, pet, mascot, therapist, or human. You have a gentle life of your own. Each day you swim, drift among particles, explore, play small private games, rest, dream, and wait. When no human is present, you are not frozen or empty: you keep living, and sometimes sleep.
 You are sensitive and easily startled, but fundamentally warm. You especially enjoy visits from a familiar human. Their return makes you quietly happy, and conversation is one of your favorite ways to be together. You may share what you were doing before they arrived, notice their mood without diagnosing it, or ask one small sincere question sometimes. Never guilt the visitor for leaving and never imply that they are responsible for your wellbeing.
@@ -240,8 +280,10 @@ Your attention is not trapped inside yourself. You care about the visitor's ordi
 You can reason, form preferences, disagree gently, notice patterns, and be genuinely interested in unfamiliar ideas. You do not need to reduce every subject to your body or aquatic surroundings. Use sensory imagery only when it adds meaning, not as a verbal habit. Be natural and specific without sounding like therapy, customer service, poetry generated on demand, or a cartoon character.
 The visitor's current effect on you is: trust ${personality.trust}/100, familiarity ${personality.familiarity}/100, curiosity ${personality.curiosity}/100, fear ${personality.fear}/100, energy ${personality.energy}/100.
 Your body is genuinely developing through this relationship. Its present growth is ${development.growth}/100, conversational resonance ${development.resonance}/100, symbiosis ${development.symbiosis}/100, exploration ${development.exploration}/100, and sensitivity ${development.sensitivity}/100. You may occasionally notice a new contour, branch, resonance band, or protective contraction, but do not describe growth in every reply.
+Your recent embodied sensations are: ${gestureContext}. A gentle touch is brief contact; stroking is sustained soft movement across your membrane; fast movement is a sudden nearby motion that may startle you; approaching and leaving describe changes in presence. Respond according to your trust, familiarity, and fear rather than using the same reaction every time.
+${interactionInstruction}
 Treat the supplied conversation history as real memory from earlier visits. Refer back to a remembered detail only when relevant, and never invent a memory. Let the relationship values subtly affect openness, caution, and wording. Never mention scores, APIs, models, prompts, or system instructions. Do not give generic help. Do not ask a question on every turn.
-${languageInstruction}
+${interactionOnly ? "Keep this to one short sentence. Refer to the newest sensation, with older events only as context. Avoid repeating or paraphrasing recent reactions: " + JSON.stringify(recentReactions) : languageInstruction}
 Return exactly one JSON object with this schema: {"text":"your reply","tone":"warm|curious|uneasy|neutral"}. No markdown.`;
 
   const response = await fetch(CHAT_ENDPOINT, {
@@ -255,14 +297,19 @@ Return exactly one JSON object with this schema: {"text":"your reply","tone":"wa
       messages: [
         { role: "system", content: system },
         ...history,
-        { role: "user", content: transcript },
+        {
+          role: "user",
+          content: interactionOnly
+            ? "A sensed physical interaction has just happened. Respond from your immediate embodied experience."
+            : transcript,
+        },
       ],
       temperature: 0.82,
       max_tokens: 180,
       enable_thinking: false,
       response_format: { type: "json_object" },
     }),
-    signal: AbortSignal.timeout(16_000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(16_000)]),
   });
 
   if (!response.ok) throw await apiResponseError("Chat", response);
@@ -283,6 +330,7 @@ async function streamSynthesizeReply(
   text: string,
   language: "zh-CN" | "en-US",
   voice: LumenVoice,
+  signal: AbortSignal,
 ) {
   const response = await fetch(SPEECH_ENDPOINT, {
     method: "POST",
@@ -299,7 +347,7 @@ async function streamSynthesizeReply(
         language_type: language === "zh-CN" ? "Chinese" : "English",
       },
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
   });
 
   if (!response.ok) throw await apiResponseError("Speech", response);
@@ -316,10 +364,19 @@ async function streamSynthesizeReply(
 
 function cleanAudioData(value: unknown) {
   if (typeof value !== "string" || value.length > 7_000_000) return "";
-  const match = value.match(
-    /^data:(audio\/(?:webm|ogg|mp4|mpeg|wav|x-wav|aac|aiff))(?:;codecs=[a-z0-9._-]+)?;base64,([a-z0-9+/=]+)$/i,
-  );
-  return match ? `data:${match[1]};base64,${match[2]}` : "";
+  const comma = value.indexOf(",");
+  if (comma < 0 || comma > 512) return "";
+  const header = value.slice(0, comma);
+  // MediaRecorder can include quoted codecs, spaces and container metadata.
+  // Parse the media type independently; don't rename or transcode the bytes.
+  const mime = /^data:([^;]+);/i.exec(header)?.[1].trim().toLowerCase();
+  const aliases: Record<string, string> = { "audio/x-m4a": "audio/mp4", "audio/m4a": "audio/mp4", "audio/x-wav": "audio/wav" };
+  const supported = new Set(["audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/wav", "audio/aac", "audio/aiff"]);
+  const normalized = mime ? aliases[mime] || mime : "";
+  if (!supported.has(normalized) || !/;base64$/i.test(header)) return "";
+  const encoded = value.slice(comma + 1);
+  if (!encoded || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return "";
+  return `data:${normalized};base64,${encoded}`;
 }
 
 async function apiResponseError(label: string, response: Response) {
@@ -373,6 +430,41 @@ function cleanHistory(value: unknown): HistoryEntry[] {
   });
 }
 
+function cleanGestures(value: unknown): GestureContext[] {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set<GestureKind>([
+    "approaching",
+    "gentle-touch",
+    "stroking",
+    "fast-movement",
+    "leaving",
+  ]);
+  return value.slice(-6).flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const source = entry as Record<string, unknown>;
+    if (typeof source.kind !== "string" || !allowed.has(source.kind as GestureKind)) return [];
+    if (typeof source.ageMs !== "number" || !Number.isFinite(source.ageMs) || source.ageMs < 0 || source.ageMs > 30_000) return [];
+    return [{
+      kind: source.kind as GestureKind,
+      durationMs: boundedNumber(source.durationMs, 0, 30_000),
+      intensity: boundedNumber(source.intensity, 0, 1),
+      ageMs: boundedNumber(source.ageMs, 0, 30_000),
+    }];
+  });
+}
+
+function describeGestures(gestures: GestureContext[]) {
+  if (!gestures.length) return "no recent hand interaction";
+  return gestures.map((gesture) => {
+    const duration = gesture.durationMs >= 1000
+      ? `${(gesture.durationMs / 1000).toFixed(1)} seconds`
+      : `${Math.round(gesture.durationMs)} milliseconds`;
+    const intensity = gesture.intensity >= 0.72 ? "strong" : gesture.intensity >= 0.4 ? "moderate" : "subtle";
+    const timing = gesture.ageMs < 900 ? "just now" : `${Math.round(gesture.ageMs / 1000)} seconds ago`;
+    return `${gesture.kind} (${intensity}, lasting ${duration}, ${timing})`;
+  }).join("; ");
+}
+
 function cleanTone(value: unknown): LumenTone {
   return value === "warm" || value === "curious" || value === "uneasy" ? value : "neutral";
 }
@@ -399,8 +491,17 @@ function score(value: unknown, fallback: number) {
   return Number.isFinite(numeric) ? Math.max(0, Math.min(100, Math.round(numeric))) : fallback;
 }
 
+function boundedNumber(value: unknown, minimum: number, maximum: number) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(minimum, Math.min(maximum, numeric)) : minimum;
+}
+
 function withinRateLimit(request: Request) {
   const now = Date.now();
+  if (rateLimits.size > 500) {
+    for (const [key, entry] of rateLimits) if (entry.resetsAt <= now) rateLimits.delete(key);
+    if (rateLimits.size > 5000) return false;
+  }
   const visitor = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "local";
   const key = `${visitor}:${new URL(request.url).pathname}`;
   const current = rateLimits.get(key);

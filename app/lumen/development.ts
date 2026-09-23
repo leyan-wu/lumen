@@ -1,3 +1,4 @@
+import { readMemory, writeMemory } from "./storage";
 import type { Personality } from "./types";
 
 export type Development = {
@@ -34,7 +35,7 @@ const DAILY_GROWTH_LIMIT = 4.5;
 
 export function loadDevelopment(personality: Personality): Development {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
+    const saved = JSON.parse(readMemory(STORAGE_KEY) ?? "null");
     if (saved && typeof saved === "object") return cleanDevelopment(saved, personality);
   } catch {
     // A damaged local memory should result in a new viable organism.
@@ -107,7 +108,7 @@ export function develop(
 }
 
 export function saveDevelopment(development: Development) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(development));
+  writeMemory(STORAGE_KEY, JSON.stringify(development));
 }
 
 export function developmentStage(growth: number): DevelopmentStage {

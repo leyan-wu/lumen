@@ -8,6 +8,11 @@ export type CreatureEvent =
   | "presence-bond"
   | null;
 
+export type CreatureSensation = {
+  touching: boolean;
+  proximity: number;
+};
+
 type Spark = { x: number; y: number; angle: number; life: number; speed: number };
 type InkMote = { x: number; y: number; vx: number; vy: number; life: number; size: number };
 type Affect = { fear: number; curiosity: number; resonance: number; solitude: number };
@@ -49,6 +54,7 @@ export class Creature {
   private heardUntil = 0;
   private heardTone: VoiceTone = "neutral";
   private voicePulse = 0;
+  private sensation: CreatureSensation = { touching: false, proximity: 0 };
   private lastMorphAt = 0;
   private morphology: Morphology = {
     growth: 0.07,
@@ -70,6 +76,10 @@ export class Creature {
     if (this.initialized) this.releaseSparks(this.position);
   }
 
+  sense(): CreatureSensation {
+    return { ...this.sensation };
+  }
+
   step(
     hand: HandSnapshot,
     personality: Personality,
@@ -77,6 +87,7 @@ export class Creature {
     height: number,
     now: number,
     deltaSeconds: number,
+    floor = height,
   ): CreatureEvent {
     if (!this.initialized) {
       this.position = { x: width * 0.5, y: height * 0.51 };
@@ -104,6 +115,11 @@ export class Creature {
     let frightened = false;
     let event: CreatureEvent = null;
 
+    this.sensation = {
+      touching: false,
+      proximity: hand.present ? clamp(1 - tipDistance / Math.max(1, awarenessDistance), 0, 1) : 0,
+    };
+
     if (hand.present) {
       if (!this.handSeenSince) this.handSeenSince = now;
       this.hasMetHand = true;
@@ -112,7 +128,7 @@ export class Creature {
       const recognitionDelay = 1450 - personality.familiarity * 11.5;
       const recognition = clamp((now - this.handSeenSince) / Math.max(240, recognitionDelay), 0, 1);
 
-      if (hand.speed > scareThreshold && now - this.lastScare > 1400) {
+      if (distance < awarenessDistance * 1.2 && hand.speed > scareThreshold && now - this.lastScare > 1400) {
         this.lastScare = now;
         this.moodUntil = now + 950;
         this.touching = false;
@@ -137,6 +153,7 @@ export class Creature {
         resonanceTarget = 1;
         fearTarget *= 0.35;
         this.contactPoint = tipPoint;
+        this.sensation.touching = true;
         // Contact deforms the membrane locally; it does not drag the organism.
         this.target = { ...this.position };
         if (!this.touching) {
@@ -258,7 +275,11 @@ export class Creature {
     this.transitionMood(desiredMood, now);
 
     this.target.x = clamp(this.target.x, radius * 1.2, width - radius * 1.2);
-    this.target.y = clamp(this.target.y, radius * 1.2, height - radius * 1.2);
+    const ceiling = Math.max(radius * 1.2, 180);
+    const lowerEdge = Math.max(ceiling, floor - radius * 1.2);
+    this.target.y = clamp(this.target.y, ceiling, lowerEdge);
+    this.position.x = clamp(this.position.x, radius, Math.max(radius, width - radius));
+    this.position.y = clamp(this.position.y, radius, Math.max(radius, lowerEdge));
 
     const activityEnergy = this.activity === "dreaming" ? 0.18 : this.activity === "playing" ? 1.18 : 1;
     const energy = (0.65 + personality.energy / 180) * activityEnergy;

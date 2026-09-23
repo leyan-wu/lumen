@@ -675,13 +675,22 @@ button {
   position: fixed;
   inset: 0;
   z-index: 20;
-  display: grid;
+  display: none;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
   padding: 24px;
   place-items: center;
   background: rgba(1, 7, 10, 0.74);
   backdrop-filter: blur(18px);
   animation: guide-arrival 520ms ease both;
 }
+
+.guide-backdrop[open] { display: grid; }
+.guide-backdrop::backdrop { background: rgba(1, 7, 10, 0.7); }
 
 .guide-card {
   width: min(760px, 92vw);
@@ -867,4 +876,55 @@ button {
   .lumen-speech.is-visible { opacity: 1; transform: translate(-50%, 0); }
 
   .voice-button.is-listening .voice-orb { animation: none; }
+}
+
+/* Keep the organism central while making the actual controls readable. */
+.experience { min-height: max(100svh, 760px); }
+html, body { overflow-x: hidden; overflow-y: auto; }
+.presence { font-size: .75rem; letter-spacing: .08em; }
+.message { color: #b3cdc5; font-size: .875rem; letter-spacing: .015em; text-transform: none; line-height: 1.5; }
+.invitation { width: min(94vw, 660px); bottom: 84px; gap: 10px; }
+.visit-controls { flex-direction: column; gap: 8px; width: 100%; }
+.voice-control { justify-content: center; gap: 10px; }
+.voice-button, .meet-button, .guide-enter { font-size: .875rem; letter-spacing: .035em; min-height: 44px; }
+.voice-status { font-size: .75rem; color: #adcac0; letter-spacing: .025em; }
+.quiet-button, .voice-language, .preview-toggle, .dream-toggle { font-size: .875rem; min-height: 40px; letter-spacing: .045em; color: #b3cdc5; }
+.microphone-select, .lumen-voice-select { max-width: 190px; min-height: 40px; font-size: .875rem; color: #c5ded6; }
+.gesture-voice-button { padding: 8px 12px; min-height: 40px; border: 1px solid #416057; border-radius: 24px; font-size: .875rem; background: #0b2222; color: #c5ded6; cursor: pointer; }
+.gesture-voice-button[aria-pressed="true"] { border-color: #a3e8ce; background: #173c35; }
+.gesture-voice-button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, select:focus-visible { outline: 2px solid #a3e8ce; outline-offset: 4px; }
+.help-button { width: 36px; height: 36px; font-size: .875rem; color: #c5ded6; }
+.guide-kicker, .guide-grid span, .preview-caption, .memory, .dream-entry time, .life-activity small, .lumen-speech::before, .conversation-transcript span { font-size: .75rem; letter-spacing: .06em; color: #a3c8bc; }
+.guide-grid p, .guide-note, .dream-entry p { font-size: 1rem; line-height: 1.6; color: #c1d8d0; }
+.guide-backdrop { overflow-y: auto; }
+.guide-card { margin: auto; }
+.guide-intro { color: #cfdfd9; }
+.lumen-speech { width: min(80vw, 420px); font-size: 1.125rem; line-height: 1.5; max-height: 190px; overflow-y: auto; pointer-events: auto; padding: 12px 16px; border-radius: 18px; background: rgba(3, 15, 19, .82); backdrop-filter: blur(8px); }
+.lumen-speech:not(.is-visible) { visibility: hidden; pointer-events: none; }
+.conversation-transcript { font-size: 1rem; max-height: 76px; overflow-y: auto; }
+.conversation-transcript:not(.is-visible) { display: none; }
+.life-activity { color: #97bcb0; }
+.privacy { font-size: .75rem; letter-spacing: 0; color: #8ba69d; max-width: calc(100% - 230px); }
+.dream-journal { bottom: auto; top: 100px; left: 24px; width: min(280px, 30vw); }
+.dream-journal.is-open { padding: 12px 16px; border-radius: 16px; border: 1px solid #34524a; background: rgba(3, 15, 19, .95); }
+.dream-journal.is-open .dream-entry { max-height: 220px; overflow-y: auto; }
+.tracking-video { object-fit: fill; }
+.memory-line { width: 64px; height: 2px; }
+@media (max-width: 620px) {
+  .experience { min-height: max(100svh, 820px); }
+  .brand { top: 18px; left: 18px; }
+  .presence { top: 65px; left: 18px; right: 18px; font-size: .75rem; }
+  .hand-preview { top: 100px; width: 126px; }
+  .dream-journal { top: 108px; left: 18px; width: calc(100% - 180px); }
+  .dream-journal.is-open { z-index: 5; width: calc(100% - 36px); }
+  .invitation { bottom: max(38px, env(safe-area-inset-bottom)); }
+  .voice-control { max-width: 100%; gap: 8px; }
+  .voice-status { flex-basis: 100%; order: 1; }
+  .lumen-speech { max-height: 155px; font-size: 1rem; }
+  .guide-backdrop { padding: 16px; }
+  .guide-card { width: 100%; padding: 26px 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
