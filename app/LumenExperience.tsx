@@ -1002,38 +1002,48 @@ export default function LumenExperience() {
         <p className={`conversation-transcript ${lastTranscript ? "is-visible" : ""}`} aria-live="polite">
           <span>you</span>{lastTranscript}
         </p>
-        {cameraState !== "active" && (
-          <button className="meet-button" onClick={startCamera} disabled={cameraState === "loading"}>
-            <span>{cameraState === "loading" ? "Waking Lumen" : cameraState === "error" ? "Try again" : "Let Lumen see you"}</span>
-            <span className="button-arrow" aria-hidden="true">↗</span>
-          </button>
-        )}
-          <div className="visit-controls">
-            <div className="voice-control">
-              <button
-                className={`voice-button ${conversationActive ? "is-listening" : ""}`}
-                type="button"
-                onClick={toggleConversation}
-                aria-pressed={conversationActive}
-                disabled={!conversationActive && (voiceState === "transcribing" || voiceState === "processing" || voiceState === "speaking")}
-                aria-label={conversationActive ? "End continuous conversation" : "Begin continuous conversation"}
-              >
-                <span className="voice-orb" aria-hidden="true" />
-                <span>{conversationActive ? "end conversation" : "begin conversation"}</span>
-              </button>
-              <span className="voice-status" aria-live="polite">
-                {VOICE_STATE_COPY[voiceState]}
-              </span>
-              <button
-                className="voice-language"
-                type="button"
-                onClick={() => setVoiceLanguage((language) => language === "en-US" ? "zh-CN" : "en-US")}
-                disabled={conversationActive || voiceState === "processing" || voiceState === "speaking"}
-                aria-label={`Voice language: ${voiceLanguage === "zh-CN" ? "Chinese" : "English"}. Click to change.`}
-              >
-                {voiceLanguage === "zh-CN" ? "中文" : "EN"}
-              </button>
+        <div className="visit-controls">
+          <div className="voice-control">
+            <button
+              className={`voice-button ${conversationActive ? "is-listening" : ""}`}
+              type="button"
+              onClick={toggleConversation}
+              aria-pressed={conversationActive}
+              disabled={!conversationActive && (voiceState === "transcribing" || voiceState === "processing" || voiceState === "speaking")}
+              aria-label={conversationActive ? "End continuous conversation" : "Begin continuous conversation"}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M9 22h6" /></svg>
+              <span>{conversationActive ? "End conversation" : "Talk to Lumen"}</span>
+              <span className="voice-orb" aria-hidden="true" />
+            </button>
+            <button
+              className={`touch-button ${cameraState === "active" ? "is-active" : ""}`}
+              type="button"
+              onClick={cameraState === "active" || cameraState === "loading" ? stopCamera : startCamera}
+              aria-label={cameraState === "active" || cameraState === "loading" ? "Turn off camera" : "Let Lumen see you"}
+              aria-pressed={cameraState === "active"}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="3" /><path d="m16 10 5-3v10l-5-3" /></svg>
+              <span>{cameraState === "loading" ? "Cancel camera" : cameraState === "active" ? "Camera on" : cameraState === "error" ? "Retry camera" : "Enable touch"}</span>
+            </button>
+            <button className="settings-toggle" type="button" popoverTarget="interaction-settings" aria-label="Interaction settings" title="Interaction settings">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" fill="currentColor" stroke="none" /><circle cx="15" cy="17" r="3" fill="currentColor" stroke="none" /></svg>
+            </button>
+          </div>
+          <p className={`voice-status ${conversationActive ? "is-active" : ""}`} aria-live="polite">
+            {voiceState === "idle" ? "A little company. A conversation, or a gentle touch." : VOICE_STATE_COPY[voiceState]}
+          </p>
+        </div>
+        <div className="interaction-settings" id="interaction-settings" popover="auto" aria-labelledby="settings-title">
+          <div className="settings-heading">
+            <div><span className="settings-kicker">YOUR SPACE</span><h2 id="settings-title">Interaction settings</h2></div>
+            <button type="button" className="settings-close" popoverTarget="interaction-settings" popoverTargetAction="hide" aria-label="Close settings">×</button>
+          </div>
+          <p className="settings-note">{conversationActive ? "End the conversation to change your voice or microphone." : "Choose what feels comfortable. Your camera is optional."}</p>
+          <div className="settings-field">
+            <label htmlFor="microphone-input">Microphone</label>
               <select
+                id="microphone-input"
                 className="microphone-select"
                 value={selectedMicrophoneId}
                 onChange={(event) => {
@@ -1050,7 +1060,11 @@ export default function LumenExperience() {
                   <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
                 ))}
               </select>
+          </div>
+          <div className="settings-field">
+            <label htmlFor="lumen-voice-input">Lumen’s voice</label>
               <select
+                id="lumen-voice-input"
                 className="lumen-voice-select"
                 value={selectedVoice}
                 onChange={(event) => {
@@ -1066,9 +1080,21 @@ export default function LumenExperience() {
                 <option value="Andre">Andre · steady</option>
                 <option value="Neil">Neil · precise</option>
               </select>
+          </div>
+          <div className="settings-field">
+            <span id="language-label">Conversation language</span>
+            <button className="voice-language" type="button"
+              onClick={() => setVoiceLanguage((language) => language === "en-US" ? "zh-CN" : "en-US")}
+              disabled={conversationActive || voiceState === "processing" || voiceState === "speaking"}
+              aria-label={`Voice language: ${voiceLanguage === "zh-CN" ? "Chinese" : "English"}. Click to change.`}
+            >{voiceLanguage === "zh-CN" ? "中文 ⇄" : "English ⇄"}</button>
+          </div>
+          <div className="settings-field settings-gesture">
+            <div><span id="gesture-label">Respond to touch</span><small>{cameraState === "active" ? "Occasional spoken reactions to your hand" : "Enable the camera to hear touch reactions"}</small></div>
               <button
                 type="button"
                 className="gesture-voice-button"
+                aria-labelledby="gesture-label"
                 disabled={cameraState !== "active"}
                 aria-pressed={gestureVoiceEnabled}
                 onClick={async () => {
@@ -1084,14 +1110,9 @@ export default function LumenExperience() {
                     setGestureVoiceEnabled(true);
                   } catch { announce("Sound could not start. Please try again.", 4000, true); }
                 }}
-              >{gestureVoiceEnabled ? "hand voice on" : "hand voice off"}</button>
-            </div>
-            {cameraState === "active" || cameraState === "loading" ? (
-              <button className="quiet-button" onClick={stopCamera} aria-label="Turn off camera">
-                {cameraState === "loading" ? "cancel camera" : "end visit"}
-              </button>
-            ) : null}
+              ><span aria-hidden="true" />{gestureVoiceEnabled ? "On" : "Off"}</button>
           </div>
+        </div>
       </section>
 
       <aside className="memory" title="Bond grows through calm contact and conversation; memory is saved in this browser.">
@@ -1127,11 +1148,11 @@ export default function LumenExperience() {
             <div className="guide-grid">
               <article>
                 <span>01 · talk</span>
-                <p>Choose a microphone and begin conversation once. Speak naturally, then pause for a reply. The camera is optional for talking.</p>
+                <p>Choose Talk to Lumen, speak naturally, then pause for a reply. Microphone, language and voice options are in settings. The camera is optional for talking.</p>
               </article>
               <article>
                 <span>02 · reach</span>
-                <p>Move one hand slowly. Its membrane notices your approach. Bring your fingertip to its membrane and move gently. Turn on hand voice for occasional spoken reactions; otherwise, watch its body respond.</p>
+                <p>Move one hand slowly. Its membrane notices your approach. Bring your fingertip to its membrane and move gently. Enable touch to open the camera. For occasional spoken reactions, turn on Respond to touch in settings.</p>
               </article>
               <article>
                 <span>03 · return</span>
