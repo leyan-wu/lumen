@@ -31,6 +31,7 @@ test("server-renders the Lumen experience", async () => {
   const html = await response.text();
   assert.match(html, /<title>Lumen — a digital lifeform<\/title>/i);
   assert.match(html, /Enable touch/);
+  assert.match(html, /Voice language: English/);
   assert.match(html, /Meet Lumen/);
   assert.match(html, /last dream/);
   assert.match(html, /Camera stays on this device/);

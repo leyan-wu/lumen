@@ -370,8 +370,6 @@ export default function LumenExperience() {
       const currentActivity = lifeActivityFor(new Date());
       creatureRef.current.setActivity(currentActivity);
       setActivity(currentActivity);
-      const preferredLanguage = navigator.languages?.find((language) => /^(zh|en)/i.test(language));
-      setVoiceLanguage(preferredLanguage?.toLocaleLowerCase().startsWith("zh") ? "zh-CN" : "en-US");
       const rememberedVoice = readMemory(VOICE_STORAGE_KEY);
       if (rememberedVoice === "Andre" || rememberedVoice === "Neil" || rememberedVoice === "Maia") {
         setSelectedVoice(rememberedVoice);

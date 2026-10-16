@@ -191,3 +191,51 @@ test("an empty voice stream retries with the same cloud voice; a cancelled turn 
   await assert.rejects(player.speak("hello", "en-US", "Neil", cancelled.signal), { name: "AbortError" });
   assert.equal(voices.length, 2);
 });
+
+test("upstream failures never expose credentials in responses or application logs", async t => {
+  const credential = "audit-sentinel-credential-never-use";
+  const privateContent = "audit-sentinel-private-conversation";
+  const cases = [
+    [worker.handleLumenConversation, "converse", { transcript: "hello" }],
+    [worker.handleLumenTranscription, "transcribe", { audio: "data:audio/webm;base64,AQIDBA==" }],
+    [worker.handleLumenSpeech, "speak", { text: "Hello" }],
+    [worker.handleLumenDream, "dream", { day: "2026-10-17" }],
+  ];
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args));
+  let failure = "response";
+  t.mock.method(globalThis, "fetch", async () => {
+    if (failure === "network") throw new Error(`${credential}: ${privateContent}`);
+    return new Response(JSON.stringify({ code: failure === "billing" ? "Arrearage" : "InvalidApiKey", message: `${credential}: ${privateContent}` }), { status: 401 });
+  });
+  for (const mode of ["response", "network", "billing"]) {
+    failure = mode;
+    for (const [handler, route, body] of cases) {
+      const response = await handler(request(body, route), credential);
+      assert.equal(response.status, mode === "billing" ? 402 : 502);
+      const visible = await response.text();
+      assert.ok(!visible.includes(credential));
+      assert.ok(!visible.includes(privateContent));
+    }
+  }
+  assert.equal(logs.length, 12);
+  const logged = JSON.stringify(logs);
+  assert.ok(!logged.includes(credential));
+  assert.ok(!logged.includes(privateContent));
+});
+
+test("omitting language uses English for reply generation, ASR, speech and dreams", async t => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return Response.json({ choices: [{ message: { content: '{"text":"Hello","tone":"warm"}' } }] });
+  });
+  await worker.handleLumenConversation(request({ transcript: "Hello" }), "test-key");
+  assert.match(calls.at(-1).messages[0].content, /Reply only in natural English/);
+  await worker.handleLumenTranscription(request({ audio: "data:audio/webm;base64,AQIDBA==" }, "transcribe"), "test-key");
+  assert.equal(calls.at(-1).asr_options.language, "en");
+  await worker.handleLumenSpeech(request({ text: "Hello" }, "speak"), "test-key");
+  assert.equal(calls.at(-1).input.language_type, "English");
+  await worker.handleLumenDream(request({ day: "2026-10-17" }, "dream"), "test-key");
+  assert.match(calls.at(-1).messages[0].content, /Use natural English only/);
+});

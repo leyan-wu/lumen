@@ -379,13 +379,22 @@ function cleanAudioData(value: unknown) {
   return `data:${normalized};base64,${encoded}`;
 }
 
+class BailianApiError extends Error {
+  constructor(label: string, status: number, readonly insufficientBalance: boolean) {
+    super(`${label} request failed with ${status}${insufficientBalance ? " (insufficient balance)" : ""}`);
+  }
+}
+
 async function apiResponseError(label: string, response: Response) {
-  const detail = cleanText(await response.text(), 480);
-  return new Error(`${label} request failed with ${response.status}${detail ? `: ${detail}` : ""}`);
+  // Classify billing failures without retaining or logging upstream response
+  // bodies, which may contain request details or echoed credentials.
+  const detail = await response.text();
+  const insufficientBalance = /Arrearage|overdue-payment|account is in good standing/i.test(detail);
+  return new BailianApiError(label, response.status, insufficientBalance);
 }
 
 function isArrearage(error: unknown) {
-  return /Arrearage|overdue-payment|account is in good standing/i.test(safeError(error));
+  return error instanceof BailianApiError && error.insufficientBalance;
 }
 
 function parseReply(content: string): { text?: unknown; tone?: unknown } {
@@ -525,7 +534,9 @@ function isSameOrigin(request: Request) {
 }
 
 function safeError(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown error";
+  if (error instanceof BailianApiError) return error.message;
+  if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) return error.name;
+  return "Upstream request failed";
 }
 
 function json(body: unknown, status = 200) {
