@@ -1,6 +1,6 @@
 # Lumen — narrative draft for discussion
 
-This draft captures the creator's stated motivation. It is a proposal for the README's opening, not a claim about machine consciousness.
+This early draft informed the [current README](../README.md). It records the creator's stated motivation and the narrative discussion, not a claim about machine consciousness.
 
 ## Possible opening
 
